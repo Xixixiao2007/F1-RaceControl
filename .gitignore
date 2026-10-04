@@ -32,6 +32,7 @@ tools/tztest/parity.args
 # F1 直连冒烟测试（连真服务器）的编译产物，同理
 tools/tztest/smokeout/
 tools/tztest/smoke.args
+tools/tztest/pipeline.args
 # 上次发布的记录（版本号守卫用），是本机状态不该提交
 tools/.release-state.json
 
