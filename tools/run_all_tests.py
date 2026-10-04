@@ -133,7 +133,8 @@ def main():
     print("③ 端到端：真实客户端代码 <=> 假 HA")
     print("=" * 74)
 
-    rounds = [("真实数据回放（REST 历史 + 分类 + 警报次数）", [], "rest", "", 20, 400)]
+    rounds = [("真实数据回放（REST 历史 + 分类 + 警报次数）",
+              ["--shift-to-now"], "rest", "", 20, 400)]
     if not args.quick:
         rounds += [
             ("剧本 red_flag（WebSocket 实时 + 状态机到 RED）",

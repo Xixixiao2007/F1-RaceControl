@@ -55,6 +55,8 @@ TESTED_SOURCES = (
     "MessageStore.java",  # 去重 / 容量 / 序列化
     "Translator.java",    # 判罚等消息的中文简述
     "WsFrame.java",       # RFC6455 帧编解码
+    "F1Feed.java",        # F1 官方流的增量合并（A 方案）
+    "F1Layout.java",      # 界面几何计算（圆环 / 轮胎面板 / 旗语栏）
 )
 
 
@@ -108,7 +110,10 @@ def main():
 
     print("[test] 运行 TzTest")
     print()
-    p = subprocess.run([java, "-cp", OUT, "com.haf1.racecontrol.TzTest"],
+    # F1Feed 的真实快照夹具（官方归档生成）。
+    fixture = os.path.join(HERE, "mock_data", "f1_snapshot_real.json")
+    p = subprocess.run([java, "-Df1.fixture=" + fixture, "-cp", OUT,
+                        "com.haf1.racecontrol.TzTest"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        universal_newlines=True, encoding="utf-8", errors="replace")
     sys.stdout.write(p.stdout)

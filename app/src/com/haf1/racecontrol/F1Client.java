@@ -1,0 +1,418 @@
+package com.haf1.racecontrol;
+
+import android.util.Base64;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.security.SecureRandom;
+
+import javax.net.ssl.SSLSocketFactory;
+
+/**
+ * F1 官方实时流的客户端 —— A 方案的**唯一数据来源**，不带任何令牌。
+ *
+ * ## 端点（全部实测过，不需要 F1TV 订阅）
+ *
+ *     POST https://livetiming.formula1.com/signalrcore/negotiate?negotiateVersion=1
+ *          -> {"connectionToken":"..."}
+ *     GET  wss://livetiming.formula1.com/signalrcore?id=<connectionToken>
+ *          -> 101 Switching Protocols
+ *     发   {"protocol":"json","version":1} + 0x1e
+ *     发   {"type":1,"target":"Subscribe","arguments":[[流名...]],"invocationId":"0"} + 0x1e
+ *
+ * `RaceControlMessages` / `TrackStatus` / `TimingData` / `TimingAppData` /
+ * `DriverList` 这些都在官方**公开**流里；需要 F1TV 的只有 `CarData.z`、
+ * `Position.z`、`TeamRadio` 那几个，本 App 一个都不用。
+ *
+ * ## 三个必须处理的细节（全是实测踩出来的）
+ *
+ * 1. **令牌是一次性的**。同一个 connectionToken 用第二次直接 404，
+ *    所以每次重连都必须重新 negotiate —— 不能在重连时复用旧令牌。
+ * 2. **大消息会分片**。初始快照几十 KB，服务端按 FIN/续帧拆开，
+ *    必须用 {@link WsFrame#readMessage} 重组，否则只会拿到半截 JSON。
+ * 3. **心跳要回**。收到 `{"type":6}` 必须回一条 `{"type":6}`，
+ *    否则服务端会断开连接。
+ *
+ * ## 与 HA 那套的区别
+ * `HaWebSocket` 走的是 HA 自己的 auth/subscribe 协议；F1 是 SignalR，
+ * 只有"TCP + HTTP Upgrade + RFC6455 帧"这三层相同，所以帧编解码复用
+ * {@link WsFrame}，其余另写。记录之间用 0x1e（RS）分隔。
+ */
+public class F1Client {
+
+    public static final String HOST = "livetiming.formula1.com";
+    public static final String NEGOTIATE_URL =
+            "https://" + HOST + "/signalrcore/negotiate?negotiateVersion=1";
+    public static final String WS_PATH = "/signalrcore";
+    /** SignalR 的记录分隔符。 */
+    public static final char RS = '\u001e';
+
+    private static final int CONNECT_TIMEOUT_MS = 10000;
+    private static final int READ_TIMEOUT_MS = 90000;
+    private static final int MAX_IDLE_ROUNDS = 2;
+    /** 重连退避上限。 */
+    private static final int MAX_BACKOFF_MS = 60000;
+
+    public interface Listener {
+        /** 握手 + 订阅成功（每次重连都会再报一次）。 */
+        void onOpen();
+        /** 状态有变化。 */
+        void onFeed(F1Feed feed);
+        /** 出错（之后会自动重连）。 */
+        void onError(String message);
+        /** 连接断开（无论正常还是异常）。 */
+        void onClose();
+    }
+
+    /** 供调用方复用：直接喂给 {@link F1Feed#onRecord}。 */
+    private final F1Feed feed;
+    private final Listener listener;
+
+    private volatile boolean closed = false;
+    private volatile Socket socket;
+    private InputStream in;
+    private OutputStream out;
+    private String lastError = "";
+
+    public F1Client(Listener listener) {
+        this.feed = new F1Feed();
+        this.listener = listener;
+        // ★ 这里**不**给 feed 装监听器：由调用方自己装。
+        //   主界面要在**每条新消息**上做告警，而不是每帧刷一次。
+        //   （原来装了个空的，看着像已经处理了，其实是死的。）
+    }
+
+    public F1Feed feed() {
+        return feed;
+    }
+
+    public String lastError() {
+        return lastError;
+    }
+
+    /** 从外部线程调用以中止连接。 */
+    public void stop() {
+        closed = true;
+        Socket s = socket;
+        if (s != null) {
+            try {
+                s.close();
+            } catch (IOException ignored) {
+                // ignore
+            }
+        }
+    }
+
+    /**
+     * 阻塞运行，断线自动重连，直到 {@link #stop()}。
+     *
+     * 请放到独立线程里跑：它会一直循环。
+     */
+    public void runForever() {
+        int backoff = 1000;
+        while (!closed) {
+            boolean ok = false;
+            try {
+                ok = runOnce();
+            } catch (Throwable t) {
+                lastError = describe(t);
+            } finally {
+                if (!closed && listener != null) {
+                    listener.onClose();
+                }
+            }
+            if (closed) {
+                break;
+            }
+            if (ok) {
+                backoff = 1000;          // 成功连过就重置退避
+            }
+            sleep(backoff);
+            backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+        }
+    }
+
+    private void sleep(int ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            closed = true;
+        }
+    }
+
+    /** 连一次；返回 true 表示成功握手并订阅过。 */
+    private boolean runOnce() throws IOException {
+        // ★ 每次都重新 negotiate：令牌一次性，复用必然 404。
+        String token = negotiate();
+        if (token == null || token.length() == 0) {
+            throw new IOException("negotiate 没有返回 connectionToken");
+        }
+
+        Socket s = SSLSocketFactory.getDefault().createSocket();
+        s.connect(new InetSocketAddress(HOST, 443), CONNECT_TIMEOUT_MS);
+        s.setSoTimeout(READ_TIMEOUT_MS);
+        s.setTcpNoDelay(true);
+        socket = s;
+        in = new BufferedInputStream(s.getInputStream());
+        out = new BufferedOutputStream(s.getOutputStream());
+
+        handshake(token);
+        send(handshakeMsg());
+        send(subscribeMsg());
+
+        boolean opened = false;
+        int idleRounds = 0;
+        String pending = "";
+        while (!closed) {
+            WsFrame f;
+            try {
+                f = WsFrame.readMessage(in);      // 自动重组分片
+                idleRounds = 0;
+            } catch (SocketTimeoutException te) {
+                idleRounds++;
+                if (idleRounds >= MAX_IDLE_ROUNDS) {
+                    throw new IOException("空闲超时（已发心跳但无响应）");
+                }
+                sendControl(WsFrame.OP_PING, new byte[0]);
+                continue;
+            }
+            if (f.opcode == WsFrame.OP_PING) {
+                sendControl(WsFrame.OP_PONG, f.payload);
+                continue;
+            }
+            if (f.opcode == WsFrame.OP_PONG) {
+                continue;
+            }
+            if (f.opcode == WsFrame.OP_CLOSE) {
+                throw new IOException("服务端关闭了连接");
+            }
+            if (f.opcode != WsFrame.OP_TEXT) {
+                continue;
+            }
+            pending += new String(f.payload, "UTF-8");
+            String[] records = pending.split(String.valueOf(RS), -1);
+            // 最后一段可能是不完整的（下一次才补齐），留着
+            pending = records[records.length - 1];
+            boolean changed = false;
+            for (int i = 0; i < records.length - 1; i++) {
+                String rec = records[i].trim();
+                if (rec.length() == 0) {
+                    continue;
+                }
+                JSONObject o;
+                try {
+                    o = new JSONObject(rec);
+                } catch (Exception e) {
+                    continue;                     // 不是 JSON 就跳过，不断流
+                }
+                int type = o.optInt("type", -1);
+                if (type == 6) {
+                    send(pingReplyMsg());          // ★ 必须回，否则会被断开
+                    continue;
+                }
+                if (type == 7) {
+                    throw new IOException("服务端要求关闭：" + rec);
+                }
+                if (type == 3 && !opened) {
+                    opened = true;
+                    if (listener != null) {
+                        listener.onOpen();
+                    }
+                }
+                changed |= feed.onRecord(o);
+            }
+            if (changed && listener != null) {
+                listener.onFeed(feed);
+            }
+        }
+        closeQuietly();
+        return opened;
+    }
+
+    // ------------------------------------------------------------------
+    // 协议消息
+    // ------------------------------------------------------------------
+
+    static String handshakeMsg() {
+        return "{\"protocol\":\"json\",\"version\":1}" + RS;
+    }
+
+    static String pingReplyMsg() {
+        return "{\"type\":6}" + RS;
+    }
+
+    static String subscribeMsg() {
+        StringBuilder b = new StringBuilder();
+        b.append("{\"type\":1,\"target\":\"Subscribe\",\"arguments\":[[");
+        for (int i = 0; i < F1Feed.STREAMS.length; i++) {
+            if (i > 0) {
+                b.append(',');
+            }
+            b.append('"').append(F1Feed.STREAMS[i]).append('"');
+        }
+        b.append("]],\"invocationId\":\"0\"}").append(RS);
+        return b.toString();
+    }
+
+    /**
+     * 测试官方流是否可达（只做一次 negotiate，不建长连接）。
+     *
+     * 给设置页的“测试连接”用。没有参数、不需要任何凭据。
+     */
+    public static String testConnectivity() throws IOException {
+        F1Client c = new F1Client(null);
+        String token = c.negotiate();
+        if (token == null || token.length() == 0) {
+            throw new IOException("negotiate 没有返回 connectionToken");
+        }
+        return "官方流可达：已拿到连接令牌（" + token.length() + " 字符）";
+    }
+
+    /**
+     * 拿一次性连接令牌。
+     *
+     * 只发一个 POST、空 body。**不需要任何鉴权头** —— 公开流就是这样。
+     * 实测 OPTIONS 会返回 405 并且带一个 AWSALBCORS 亲和性 cookie，
+     * 但那个 cookie 也**不是必需的**（去掉照样 101），所以这里不折腾它。
+     */
+    String negotiate() throws IOException {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(NEGOTIATE_URL).openConnection();
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            c.setReadTimeout(CONNECT_TIMEOUT_MS);
+            c.setRequestProperty("User-Agent", "HA-F1-RaceControl");
+            c.setDoOutput(true);
+            c.setFixedLengthStreamingMode(0);
+            c.getOutputStream().close();
+            int code = c.getResponseCode();
+            if (code != 200) {
+                throw new IOException("negotiate HTTP " + code);
+            }
+            InputStream is = c.getInputStream();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+            }
+            is.close();
+            JSONObject o = new JSONObject(new String(bos.toByteArray(), "UTF-8"));
+            String t = o.optString("connectionToken", "");
+            if (t.length() == 0) {
+                t = o.optString("ConnectionToken", "");
+            }
+            return t;
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("negotiate 失败：" + e.getMessage());
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 底层
+    // ------------------------------------------------------------------
+
+    private void send(String text) throws IOException {
+        byte[] payload = text.getBytes("UTF-8");
+        out.write(WsFrame.encode(WsFrame.OP_TEXT, payload));
+        out.flush();
+    }
+
+    private void sendControl(int opcode, byte[] payload) {
+        try {
+            out.write(WsFrame.encode(opcode, payload));
+            out.flush();
+        } catch (IOException ignored) {
+            // 下一轮 read 会抛出来，交给重连处理
+        }
+    }
+
+    private void handshake(String token) throws IOException {
+        byte[] nonce = new byte[16];
+        new SecureRandom().nextBytes(nonce);
+        // ★ 必须是 16 字节的 base64。早先用过 hex，服务端直接 400。
+        String key = Base64.encodeToString(nonce, Base64.NO_WRAP);
+
+        String path = WS_PATH + "?id=" + URLEncoder.encode(token, "UTF-8");
+        String req = "GET " + path + " HTTP/1.1\r\n"
+                + "Host: " + HOST + "\r\n"
+                + "Upgrade: websocket\r\n"
+                + "Connection: Upgrade\r\n"
+                + "Sec-WebSocket-Key: " + key + "\r\n"
+                + "Sec-WebSocket-Version: 13\r\n"
+                + "User-Agent: HA-F1-RaceControl\r\n"
+                + "\r\n";
+        out.write(req.getBytes("UTF-8"));
+        out.flush();
+
+        String head = readHttpHead();
+        if (head == null || head.indexOf("101") < 0) {
+            String first = head == null ? "(无响应)"
+                    : head.split("\r\n")[0];
+            throw new IOException("WebSocket 握手失败：" + first);
+        }
+    }
+
+    /** 读 HTTP 响应头（到空行为止），返回整段文本。 */
+    private String readHttpHead() throws IOException {
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        int state = 0;
+        while (state < 4) {
+            int b = in.read();
+            if (b < 0) {
+                break;
+            }
+            bos.write(b);
+            if ((state == 0 || state == 2) && b == '\r') {
+                state++;
+            } else if ((state == 1 || state == 3) && b == '\n') {
+                state++;
+            } else {
+                state = 0;
+            }
+            if (bos.size() > 16384) {
+                throw new IOException("响应头过长");
+            }
+        }
+        return new String(bos.toByteArray(), "UTF-8");
+    }
+
+    private void closeQuietly() {
+        try {
+            if (socket != null) {
+                socket.close();
+            }
+        } catch (IOException ignored) {
+            // ignore
+        }
+        socket = null;
+    }
+
+    private static String describe(Throwable t) {
+        String m = t.getMessage();
+        if (m == null || m.length() == 0) {
+            m = t.getClass().getSimpleName();
+        }
+        return m;
+    }
+}

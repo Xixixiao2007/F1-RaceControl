@@ -89,7 +89,11 @@ public class TrackState {
             return;
         }
         if (Classifier.K_YELLOW.equals(kind)) {
-            if (sec > 0 && !Integer.valueOf(DY).equals(sectors.get(Integer.valueOf(sec)))) {
+            // ★ 用户定的语义：**双黄区段收到普通黄旗 = 降级为单黄**。
+            //   原来这里写的是「已经是双黄就不被黄旗覆盖」—— 正好相反，
+            //   后果是双黄永远降不下来、只能等 CLEAR；而真实比赛里赛事控制
+            //   就是用一条 `YELLOW IN TRACK SECTOR n` 表示降级的。
+            if (sec > 0) {
                 sectors.put(Integer.valueOf(sec), Integer.valueOf(YELLOW));
             }
             return;
@@ -101,6 +105,84 @@ public class TrackState {
             }
             sectors.clear();
         }
+    }
+
+    /**
+     * 用 F1 官方 `TrackStatus` 流的**轨道级状态码**设定全局状态。
+     *
+     * 为什么必须有它：用户要求「红旗、安全车、虚拟安全车、**全赛道黄旗**
+     * 是针对整条赛道的」，而实测三年 RaceControlMessages 里
+     * **根本不存在** `Scope=Track` 的黄旗消息 —— 全赛道黄旗只出现在
+     * TrackStatus 流里。只靠消息就永远识别不出全赛道黄旗。
+     *
+     * 官方状态码（与上游 f1_sensor 的 _TRACK_STATUS_CODES 一致）：
+     *   1 / 8 = 全清     2 = 黄旗（全赛道）   4 = 安全车
+     *   5 = 红旗         6 = VSC              7 = VSC 结束
+     */
+    public void onTrackStatus(String code) {
+        if (code == null) {
+            return;
+        }
+        String c = code.trim();
+        if ("1".equals(c) || "8".equals(c)) {
+            global = NONE;
+            sectors.clear();
+        } else if ("2".equals(c)) {
+            global = YELLOW;
+        } else if ("4".equals(c)) {
+            global = SC;
+        } else if ("5".equals(c)) {
+            global = RED;
+            sectors.clear();
+        } else if ("6".equals(c) || "7".equals(c)) {
+            global = VSC;
+        }
+    }
+
+    /**
+     * 当前**同时存在**的旗语种类，供顶部旗语栏纵向分栏显示。
+     *
+     * 顺序固定为「轨道级（红旗/安全车/VSC/全赛道黄）在前，区段级（双黄/黄）
+     * 在后」，与用户描述的优先级一致；同一类只出现一次。
+     *
+     * 注意这和 {@link #level()} 的区别：level() 只给「最高的那一个」，
+     * 而顶部栏要的是**并存时全部列出**（比如红旗期间某区段还有双黄）。
+     */
+    public List<String> presentKinds() {
+        List<String> out = new ArrayList<String>();
+        if (global == RED) {
+            out.add(Classifier.K_RED);
+        } else if (global == SC) {
+            out.add(Classifier.K_SC);
+        } else if (global == VSC) {
+            out.add(Classifier.K_VSC);
+        } else if (global == YELLOW) {
+            out.add(Classifier.K_YELLOW);
+        }
+        if (!doubleYellowSectors().isEmpty()) {
+            out.add(Classifier.K_DY);
+        }
+        // ★ 去重：全赛道黄旗 + 有区段黄旗时，上面已经
+        //   加过一次 K_YELLOW 了。重复的话
+        //   顶部旗语栏会画出两段一模一样的「黄旗」。
+        if (!yellowSectors().isEmpty()
+                && !out.contains(Classifier.K_YELLOW)) {
+            out.add(Classifier.K_YELLOW);
+        }
+        return out;
+    }
+
+    /** 某一类旗语当前涉及的区段；轨道级（红旗/安全车/VSC）返回空列表。 */
+    public List<Integer> sectorsOf(String kind) {
+        if (Classifier.K_DY.equals(kind)) {
+            return doubleYellowSectors();
+        }
+        if (Classifier.K_YELLOW.equals(kind)) {
+            // 总是返回区段列表：全赛道黄旗时界面要同时显示
+            //   「全场」和具体哪几个区段。
+            return yellowSectors();
+        }
+        return new ArrayList<Integer>();
     }
 
     /** 当前应当显示的最高级别。 */

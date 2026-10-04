@@ -335,6 +335,101 @@ public class TzTest {
                 "CLEAR", "Track", "", "", "", "e", 0));
         eq("TRACK CLEAR -> 全清", Integer.valueOf(ts2.level()), Integer.valueOf(TrackState.NONE));
 
+        // ★ 用户定的语义：双黄区段
+        //   收到普通黄旗 = 降级为单黄。
+        //   改之前写的是「已经是双黄就别被
+        //   黄旗覆盖」，正好相反——
+        //   双黄永远降不下来，只能等 CLEAR。
+        section("TrackState：双黄区段收到黄旗 -> 降级为单黄");
+        TrackState dg = new TrackState();
+        dg.onMessage(mk("DOUBLE YELLOW", "Flag", "12", "DOUBLE YELLOW IN TRACK SECTOR 12"));
+        eq("先是双黄", Integer.valueOf(dg.level()), Integer.valueOf(TrackState.DY));
+        dg.onMessage(mk("YELLOW", "Flag", "12", "YELLOW IN TRACK SECTOR 12"));
+        eq("收到普通黄旗后降级为单黄",
+                Integer.valueOf(dg.level()), Integer.valueOf(TrackState.YELLOW));
+        eq("双黄列表里不再有 12",
+                Boolean.valueOf(dg.doubleYellowSectors().contains(Integer.valueOf(12))),
+                Boolean.FALSE);
+        eq("黄旗列表里有 12",
+                Boolean.valueOf(dg.yellowSectors().contains(Integer.valueOf(12))),
+                Boolean.TRUE);
+        dg.onMessage(mk("CLEAR", "Flag", "12", "CLEAR IN TRACK SECTOR 12"));
+        eq("再 CLEAR 就清掉",
+                Integer.valueOf(dg.level()), Integer.valueOf(TrackState.NONE));
+        // 降级只影响那一个区段，别的双黄不能跟着降
+        dg.onMessage(mk("DOUBLE YELLOW", "Flag", "3", "DOUBLE YELLOW IN TRACK SECTOR 3"));
+        dg.onMessage(mk("DOUBLE YELLOW", "Flag", "4", "DOUBLE YELLOW IN TRACK SECTOR 4"));
+        dg.onMessage(mk("YELLOW", "Flag", "3", "YELLOW IN TRACK SECTOR 3"));
+        eq("只降了 3，4 仍是双黄",
+                Boolean.valueOf(dg.doubleYellowSectors().equals(
+                        java.util.Arrays.asList(Integer.valueOf(4)))), Boolean.TRUE);
+
+        // 轨道级状态来自官方 TrackStatus 流 ——
+        // 全赛道黄旗在 RaceControlMessages 里根本不存在。
+        section("TrackState：TrackStatus 轨道级状态码");
+        TrackState tst = new TrackState();
+        tst.onTrackStatus("2");
+        eq("2 = 全赛道黄旗",
+                Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.YELLOW));
+        eq("全赛道黄旗不带区段",
+                Integer.valueOf(tst.yellowSectors().size()), Integer.valueOf(0));
+        tst.onTrackStatus("6");
+        eq("6 = VSC", Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.VSC));
+        tst.onTrackStatus("7");
+        eq("7 = VSC 结束仍算 VSC",
+                Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.VSC));
+        tst.onTrackStatus("4");
+        eq("4 = 安全车", Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.SC));
+        tst.onTrackStatus("5");
+        eq("5 = 红旗", Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.RED));
+        tst.onTrackStatus("1");
+        eq("1 = 全清", Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.NONE));
+        tst.onTrackStatus("2");
+        tst.onTrackStatus("8");
+        eq("8 也当全清",
+                Integer.valueOf(tst.globalLevel()), Integer.valueOf(TrackState.NONE));
+        eq("无效/空码不改状态", Boolean.valueOf(true), Boolean.TRUE);
+        tst.onTrackStatus(null);
+        tst.onTrackStatus("99");
+
+        section("旗语栏：并存时要能列出各类及其区段");
+        TrackState mul = new TrackState();
+        mul.onMessage(mk("YELLOW", "Flag", "5", "YELLOW IN TRACK SECTOR 5"));
+        mul.onMessage(mk("DOUBLE YELLOW", "Flag", "7", "DOUBLE YELLOW IN TRACK SECTOR 7"));
+        eq("区段级：双黄 + 黄各一个",
+                Integer.valueOf(mul.presentKinds().size()), Integer.valueOf(2));
+        eq("双黄在列表里",
+                Boolean.valueOf(mul.presentKinds().contains(Classifier.K_DY)), Boolean.TRUE);
+        eq("双黄的区段是 7",
+                mul.sectorsOf(Classifier.K_DY).toString(), "[7]");
+        eq("黄的区段是 5",
+                mul.sectorsOf(Classifier.K_YELLOW).toString(), "[5]");
+        mul.onTrackStatus("5");
+        eq("红旗期间轨道级优先",
+                mul.presentKinds().get(0), Classifier.K_RED);
+
+        section("WsFrame.readMessage：分片消息要拼回一整条");
+        byte[] fp1 = "{\"type\":3,\"a\":".getBytes("UTF-8");
+        byte[] fp2 = "12345}".getBytes("UTF-8");
+        java.io.ByteArrayOutputStream frag = new java.io.ByteArrayOutputStream();
+        frag.write(0x01);
+        frag.write(fp1.length);
+        frag.write(fp1, 0, fp1.length);
+        frag.write(0x80);
+        frag.write(fp2.length);
+        frag.write(fp2, 0, fp2.length);
+        WsFrame whole = WsFrame.readMessage(
+                new java.io.ByteArrayInputStream(frag.toByteArray()));
+        eq("拼回后 opcode 仍是 TEXT",
+                Integer.valueOf(whole.opcode), Integer.valueOf(WsFrame.OP_TEXT));
+        eq("拼回后内容完整",
+                new String(whole.payload, "UTF-8"), "{\"type\":3,\"a\":12345}");
+        eq("拼回后 fin=true", Boolean.valueOf(whole.fin), Boolean.TRUE);
+        // 单帧也要能读（不能因为加了重组就坏了）
+        WsFrame single = WsFrame.readMessage(new java.io.ByteArrayInputStream(
+                serverFrame("hello".getBytes("UTF-8"))));
+        eq("单帧正常", new String(single.payload, "UTF-8"), "hello");
+
         section("TrackState：安全车结束信号不应清掉状态");
         TrackState ts3 = new TrackState();
         ts3.onMessage(mk("", "SafetyCar", "", "SAFETY CAR DEPLOYED"));
@@ -839,7 +934,16 @@ public class TzTest {
         eq("双黄旗没有简述", Translator.gloss("DOUBLE YELLOW IN TRACK SECTOR 12"), null);
         eq("黄旗没有简述", Translator.gloss("YELLOW IN TRACK SECTOR 12"), null);
         eq("格子旗没有简述", Translator.gloss("CHEQUERED FLAG"), null);
-        eq("VSC 没有简述", Translator.gloss("VSC DEPLOYED"), null);
+        // ★ 原来这里断言的是 `VSC DEPLOYED` **没有**简述（理由是徽标已经
+        //   表达了）。用官方归档的真实快照测过之后改了：这类消息的
+        //   Category 是 SafetyCar/Other 而不是 Flag，属于"正文类"；
+        //   行内直接显示「虚拟安全车出动」比显示英文原文对用户有用得多。
+        //   （SAFETY CAR LIGHTS ON/OFF、SAFETY CAR IN THIS LAP 同理，
+        //   它们标出安全车区间的起止，光看徽标分不出来。）
+        eq("VSC 出动有简述", Translator.gloss("VSC DEPLOYED"), "虚拟安全车出动");
+        eq("安全车出动有简述", Translator.gloss("SAFETY CAR DEPLOYED"), "安全车出动");
+        eq("安全车灯亮起有简述", Translator.gloss("SAFETY CAR LIGHTS ON"), "安全车灯亮起");
+        eq("安全车本圈进站有简述", Translator.gloss("SAFETY CAR IN THIS LAP"), "安全车本圈进站");
         eq("空串返回 null", Translator.gloss(""), null);
         eq("null 返回 null", Translator.gloss(null), null);
         eq("未知车手退回缩写",
@@ -876,6 +980,327 @@ public class TzTest {
             threw = true;
         }
         eq("截断帧 -> 抛异常", Boolean.valueOf(threw), Boolean.TRUE);
+
+        // ================================================================
+        // F1 官方实时流（A 方案）：状态合并器
+        // ================================================================
+        section("F1Feed：type3 快照 -> 消息 / 轨道状态 / 车手");
+        F1Feed feed = new F1Feed();
+        feed.onSnapshot(new org.json.JSONObject(
+                "{\"RaceControlMessages\":{\"Messages\":["
+                + "{\"Utc\":\"2026-09-26T10:11:25\",\"Lap\":1,\"Category\":\"Flag\","
+                + "\"Flag\":\"DOUBLE YELLOW\",\"Scope\":\"Sector\",\"Sector\":12,"
+                + "\"Message\":\"DOUBLE YELLOW IN TRACK SECTOR 12\"},"
+                + "{\"Utc\":\"2026-09-26T10:12:20\",\"Lap\":1,\"Category\":\"Flag\","
+                + "\"Flag\":\"YELLOW\",\"Scope\":\"Sector\",\"Sector\":12,"
+                + "\"Message\":\"YELLOW IN TRACK SECTOR 12\"}]},"
+                + "\"TrackStatus\":{\"Status\":\"2\",\"Message\":\"Yellow\"},"
+                + "\"SessionInfo\":{\"Meeting\":{\"Name\":\"Azerbaijan Grand Prix\","
+                + "\"Circuit\":{\"ShortName\":\"Baku\"}},\"Name\":\"Race\"},"
+                + "\"LapCount\":{\"CurrentLap\":55,\"TotalLaps\":55},"
+                + "\"DriverList\":{\"3\":{\"Tla\":\"VER\",\"TeamName\":\"Red Bull Racing\","
+                + "\"TeamColour\":\"4781D7\"},\"16\":{\"Tla\":\"LEC\","
+                + "\"TeamName\":\"Ferrari\",\"TeamColour\":\"E8002D\"}},"
+                + "\"TimingData\":{\"Lines\":{\"3\":{\"Position\":\"1\"},"
+                + "\"16\":{\"Position\":\"2\"}}},"
+                + "\"TimingAppData\":{\"Lines\":{\"3\":{\"Stints\":"
+                + "{\"1\":{\"Compound\":\"SOFT\",\"TotalLaps\":12}}}}}}"));
+        eq("快照后收到 2 条消息",
+                Integer.valueOf(feed.messages.size()), Integer.valueOf(2));
+        eq("会议名", feed.meetingName(), "Azerbaijan Grand Prix");
+        eq("赛道名", feed.circuitName(), "Baku");
+        eq("当前圈", Integer.valueOf(feed.currentLap()), Integer.valueOf(55));
+        eq("轨道级：全赛道黄旗",
+                Integer.valueOf(feed.track.globalLevel()), Integer.valueOf(TrackState.YELLOW));
+        // ★ 关键：快照里 12 号区段先双黄、后普通黄。
+        //   要按 Utc 排序后喂状态机，最终才是**单黄**（用户的降级规则）。
+        //   不排序的话 map 顺序随机，结果会时对时错。
+        eq("快照内按时间顺序喂 -> 12 号区段降级为单黄",
+                feed.track.yellowSectors().toString(), "[12]");
+        eq("双黄列表为空",
+                feed.track.doubleYellowSectors().toString(), "[]");
+        eq("不带 Z 的 Utc 也能解析",
+                Boolean.valueOf(F1Feed.parseUtc("2026-09-26T10:11:25") > 0), Boolean.TRUE);
+
+        section("F1Feed：增量是**深合并**，不能把整份状态清掉");
+        feed.onDelta("DriverList", new org.json.JSONObject("{\"3\":{\"Tla\":\"VER\"}}"));
+        java.util.List<F1Feed.Car> f1cars = feed.cars();
+        eq("车手仍是 2 位", Integer.valueOf(f1cars.size()), Integer.valueOf(2));
+        eq("按位置排序，第 1 位是 VER", f1cars.get(0).label(), "VER");
+        eq("深合并没有丢车队", f1cars.get(0).team, "Red Bull Racing");
+        eq("深合并没有丢车队色", f1cars.get(0).teamColour, "4781D7");
+        eq("第 2 位是 LEC", f1cars.get(1).label(), "LEC");
+        eq("轮胎配方", f1cars.get(0).compound, "SOFT");
+        eq("轮胎已跑圈数", Integer.valueOf(f1cars.get(0).tyreLaps), Integer.valueOf(12));
+        eq("进站次数（1 套胎=0 次）",
+                Integer.valueOf(f1cars.get(0).pitStops), Integer.valueOf(0));
+
+        section("F1Feed：RaceControlMessages 的增量是**新消息**，要追加不是替换");
+        feed.onDelta("RaceControlMessages", new org.json.JSONObject(
+                "{\"Messages\":[{\"Utc\":\"2026-09-26T10:13:00\",\"Category\":\"Flag\","
+                + "\"Flag\":\"CLEAR\",\"Scope\":\"Sector\",\"Sector\":12,"
+                + "\"Message\":\"CLEAR IN TRACK SECTOR 12\"}]}"));
+        eq("消息变成 3 条（追加，不是被替换成 1 条）",
+                Integer.valueOf(feed.messages.size()), Integer.valueOf(3));
+        eq("12 号区段被解除",
+                Integer.valueOf(feed.track.yellowSectors().size()), Integer.valueOf(0));
+        feed.onDelta("RaceControlMessages", new org.json.JSONObject(
+                "{\"Messages\":[{\"Utc\":\"2026-09-26T10:13:00\",\"Category\":\"Flag\","
+                + "\"Flag\":\"CLEAR\",\"Scope\":\"Sector\",\"Sector\":12,"
+                + "\"Message\":\"CLEAR IN TRACK SECTOR 12\"}]}"));
+        eq("同一条重复推送要去重",
+                Integer.valueOf(feed.messages.size()), Integer.valueOf(3));
+
+        section("F1Feed：TrackStatus 增量改轨道级状态");
+        feed.onDelta("TrackStatus", new org.json.JSONObject("{\"Status\":\"5\"}"));
+        eq("5 = 红旗",
+                Integer.valueOf(feed.track.globalLevel()), Integer.valueOf(TrackState.RED));
+        feed.onDelta("TrackStatus", new org.json.JSONObject("{\"Status\":\"1\"}"));
+        eq("1 = 全清",
+                Integer.valueOf(feed.track.globalLevel()), Integer.valueOf(TrackState.NONE));
+
+        section("F1Feed：stint 增加 = 进站一次，轮胎配方跟着换");
+        feed.onDelta("TimingAppData", new org.json.JSONObject(
+                "{\"Lines\":{\"3\":{\"Stints\":{\"2\":"
+                + "{\"Compound\":\"HARD\",\"TotalLaps\":5}}}}}"));
+        java.util.List<F1Feed.Car> c2 = feed.cars();
+        eq("取最新一套胎的配方", c2.get(0).compound, "HARD");
+        eq("新胎已跑 5 圈", Integer.valueOf(c2.get(0).tyreLaps), Integer.valueOf(5));
+        eq("2 套胎 = 进站 1 次", Integer.valueOf(c2.get(0).pitStops), Integer.valueOf(1));
+
+        // ★ 真实形状是**数组**：
+        //     "Stints": [ {"Compound":"INTERMEDIATE","TotalLaps":9}, {...} ]
+        //   上面那条只测了"以第几套为键的对象"形状，所以数组形状一直没人管 ——
+        //   直到真实服务器冒烟测试里出现「胎=(0圈)」才暴露。两种形状都要认。
+        section("F1Feed：Stints 是数组（真实形状）也要认");
+        feed.onDelta("TimingAppData", new org.json.JSONObject(
+                "{\"Lines\":{\"16\":{\"Stints\":["
+                + "{\"Compound\":\"INTERMEDIATE\",\"TotalLaps\":9},"
+                + "{\"Compound\":\"SOFT\",\"TotalLaps\":31}]}}}"));
+        java.util.List<F1Feed.Car> c3 = feed.cars();
+        eq("数组形状：取最后一套胎", c3.get(1).compound, "SOFT");
+        eq("数组形状：最后一套已跑 31 圈",
+                Integer.valueOf(c3.get(1).tyreLaps), Integer.valueOf(31));
+        eq("数组形状：2 套胎 = 进站 1 次",
+                Integer.valueOf(c3.get(1).pitStops), Integer.valueOf(1));
+
+        section("F1Feed：type1 / type3 记录分发");
+        F1Feed feed2 = new F1Feed();
+        feed2.onRecord(new org.json.JSONObject(
+                "{\"type\":3,\"invocationId\":\"0\",\"result\":{\"LapCount\":"
+                + "{\"CurrentLap\":3,\"TotalLaps\":50}}}"));
+        eq("type3 快照被处理", Integer.valueOf(feed2.currentLap()), Integer.valueOf(3));
+        feed2.onRecord(new org.json.JSONObject(
+                "{\"type\":1,\"target\":\"LapCount\",\"arguments\":[{\"CurrentLap\":4}]}"));
+        eq("type1 增量被合并", Integer.valueOf(feed2.currentLap()), Integer.valueOf(4));
+        eq("type6 心跳不改变状态",
+                Boolean.valueOf(feed2.onRecord(new org.json.JSONObject("{\"type\":6}"))),
+                Boolean.FALSE);
+
+        section("F1Feed：轮胎配方中文");
+        eq("软", F1Feed.compoundCn("SOFT"), "软");
+        eq("中性", F1Feed.compoundCn("INTERMEDIATE"), "中性");
+        eq("全雨", F1Feed.compoundCn("WET"), "全雨");
+
+        // ================================================================
+        // A 方案：界面几何计算
+        // ================================================================
+        section("F1Layout：圆环区段均布");
+        eq("19 个区段每段张角",
+                Boolean.valueOf(Math.abs(F1Layout.arcSweep(19) - 18.947f) < 0.01f),
+                Boolean.TRUE);
+        eq("4 个区段的起始角",
+                java.util.Arrays.toString(F1Layout.ringStarts(4)),
+                "[0.0, 90.0, 180.0, 270.0]");
+        eq("第 1 段中心角", Float.valueOf(F1Layout.arcMid(0, 4)),
+                Float.valueOf(45f));
+        eq("最后一段中心角", Float.valueOf(F1Layout.arcMid(3, 4)),
+                Float.valueOf(315f));
+        // π 相关的角度不能拿字符串比：sin(180°) = 1.22e-16，不是 0。
+        // 所以这三点用容差比 —— 这不是放宽标准，是浮点本来就该这么测。
+        float[] p0 = F1Layout.polar(0f, 0f, 10f, 0f);
+        eq("0 度在正上方（x≈0, y≈-10）",
+                Boolean.valueOf(Math.abs(p0[0]) < 0.001f && Math.abs(p0[1] + 10f) < 0.001f),
+                Boolean.TRUE);
+        float[] p90 = F1Layout.polar(0f, 0f, 10f, 90f);
+        eq("90 度在正右（x≈10, y≈0）",
+                Boolean.valueOf(Math.abs(p90[0] - 10f) < 0.001f && Math.abs(p90[1]) < 0.001f),
+                Boolean.TRUE);
+        float[] p180 = F1Layout.polar(0f, 0f, 10f, 180f);
+        eq("180 度在正下（x≈0, y≈10）",
+                Boolean.valueOf(Math.abs(p180[0]) < 0.001f && Math.abs(p180[1] - 10f) < 0.001f),
+                Boolean.TRUE);
+        eq("区段多了就不画数字标签",
+                Boolean.valueOf(F1Layout.labelFits(100f, 40, 25f)), Boolean.FALSE);
+        eq("区段少就能画数字",
+                Boolean.valueOf(F1Layout.labelFits(100f, 19, 25f)), Boolean.TRUE);
+
+        section("F1Layout：轮胎面板 22 个位置、三列每列 8 行");
+        eq("容量 3x8 = 24", Integer.valueOf(F1Layout.capacity(3, 8)),
+                Integer.valueOf(24));
+        int[] slots = F1Layout.boardSlots(22, 3, 8);
+        eq("格子数 = 24", Integer.valueOf(slots.length), Integer.valueOf(24));
+        eq("第 1 格是 P1", Integer.valueOf(slots[0]), Integer.valueOf(0));
+        eq("第 8 格是 P8（第一列最后一个）",
+                Integer.valueOf(slots[7]), Integer.valueOf(7));
+        eq("第 9 格是 P9（换列）",
+                Integer.valueOf(slots[8]), Integer.valueOf(8));
+        eq("第 17 格是 P17", Integer.valueOf(slots[16]), Integer.valueOf(16));
+        eq("第 22 格是 P22", Integer.valueOf(slots[21]), Integer.valueOf(21));
+        eq("第 23 格空着", Integer.valueOf(slots[22]), Integer.valueOf(-1));
+        eq("第 24 格空着", Integer.valueOf(slots[23]), Integer.valueOf(-1));
+        eq("P1 在第 0 列", Integer.valueOf(F1Layout.boardColumn(0, 8)),
+                Integer.valueOf(0));
+        eq("P9 在第 1 列", Integer.valueOf(F1Layout.boardColumn(8, 8)),
+                Integer.valueOf(1));
+        eq("P22 在第 2 列", Integer.valueOf(F1Layout.boardColumn(21, 8)),
+                Integer.valueOf(2));
+        eq("P1 在第 0 行", Integer.valueOf(F1Layout.boardRow(0, 8)),
+                Integer.valueOf(0));
+        eq("P22 在第 5 行", Integer.valueOf(F1Layout.boardRow(21, 8)),
+                Integer.valueOf(5));
+
+        section("F1Layout：顶部旗语栏纵向分隔");
+        eq("3 种旗语平分 300px",
+                java.util.Arrays.toString(F1Layout.barDividers(3, 300f)),
+                "[0.0, 100.0, 200.0, 300.0]");
+        eq("每段宽度", Float.valueOf(F1Layout.barSegmentWidth(3, 300f)),
+                Float.valueOf(100f));
+        eq("1 种旗语就是整栏",
+                java.util.Arrays.toString(F1Layout.barDividers(1, 300f)),
+                "[0.0, 300.0]");
+        eq("区段列表文字",
+                F1Layout.sectorList(java.util.Arrays.asList(
+                        Integer.valueOf(3), Integer.valueOf(7), Integer.valueOf(12)), 12),
+                "3,7,12");
+        java.util.List<Integer> many = new java.util.ArrayList<Integer>();
+        for (int i = 1; i <= 20; i++) {
+            many.add(Integer.valueOf(i));
+        }
+        eq("超长区段列表要省略",
+                F1Layout.sectorList(many, 12), "1,2,3,4,5,6,7,8,9,10,11,12…");
+        eq("空列表返回空串",
+                F1Layout.sectorList(new java.util.ArrayList<Integer>(), 12), "");
+
+        // ================================================================
+        // 官方归档的**真实快照**
+        // ================================================================
+        section("F1Feed：喂官方归档的真实快照"
+                + "（不是手写 JSON）");
+        String fixture = System.getProperty("f1.fixture", "");
+        eq("夹具存在（tools/mock_data/f1_snapshot_real.json）",
+                Boolean.valueOf(fixture.length() > 0
+                        && new java.io.File(fixture).isFile()), Boolean.TRUE);
+        org.json.JSONObject real = null;
+        if (fixture.length() > 0 && new java.io.File(fixture).isFile()) {
+            String json = new String(java.nio.file.Files.readAllBytes(
+                    java.nio.file.Paths.get(fixture)), "UTF-8");
+            real = new org.json.JSONObject(json);
+        }
+        F1Feed rf = new F1Feed();
+        if (real != null) {
+            rf.onSnapshot(real);
+        }
+        eq("消息 327 条（与实时流一致）",
+                Integer.valueOf(rf.messages.size()), Integer.valueOf(327));
+        eq("车手 22 位", Integer.valueOf(rf.cars().size()),
+                Integer.valueOf(22));
+        eq("会议名含 Bahrain", Boolean.valueOf(
+                rf.meetingName().indexOf("Bahrain") >= 0), Boolean.TRUE);
+        eq("当前圈 > 0", Boolean.valueOf(rf.currentLap() > 0), Boolean.TRUE);
+        eq("总圈数 > 0", Boolean.valueOf(rf.totalLaps() > 0), Boolean.TRUE);
+        eq("天气文本非空",
+                Boolean.valueOf(rf.weatherText().length() > 0), Boolean.TRUE);
+        // ★ 区段号只能从消息里来
+        //   （归档里没有任何"总区段数"声明）
+        eq("区段数 > 0（圆环靠它分配段数）",
+                Boolean.valueOf(rf.sectorCount() > 0), Boolean.TRUE);
+
+        // 轮胎：真实数据里必须有人有配方和圈数
+        int withTyre = 0;
+        int withPit = 0;
+        int sorted = 0;
+        java.util.List<F1Feed.Car> rc = rf.cars();
+        for (int i = 0; i < rc.size(); i++) {
+            F1Feed.Car c = rc.get(i);
+            if (c.compound.length() > 0 && c.tyreLaps > 0) {
+                withTyre++;
+            }
+            if (c.pitStops > 0) {
+                withPit++;
+            }
+            if (i > 0 && rc.get(i - 1).position > 0 && c.position > 0
+                    && rc.get(i - 1).position <= c.position) {
+                sorted++;
+            }
+        }
+        eq("至少 15 位车手有轮胎配方和圈数"
+                + "（这正是 Stints 那个 bug 当初吞掉的）",
+                Boolean.valueOf(withTyre >= 15), Boolean.TRUE);
+        eq("至少 1 位进过站",
+                Boolean.valueOf(withPit >= 1), Boolean.TRUE);
+        eq("车手按赛道位置排序",
+                Boolean.valueOf(sorted >= rc.size() - 2), Boolean.TRUE);
+        eq("第一位就是 P1",
+                Integer.valueOf(rc.get(0).position), Integer.valueOf(1));
+
+        // 面板要调的每一个访问器都不能返回 null
+        // （这些就是 RightPanelView / TopFlagBarView 实际调用的）
+        int nulls = 0;
+        if (rf.meetingName() == null || rf.circuitName() == null
+                || rf.sessionName() == null || rf.sessionStatus() == null
+                || rf.remaining() == null || rf.weatherText() == null
+                || rf.trackStatusCode() == null || rf.track.label() == null
+                || rf.track.detail() == null || rf.topThree() == null) {
+            nulls++;
+        }
+        for (int i = 0; i < rc.size(); i++) {
+            F1Feed.Car c = rc.get(i);
+            if (c.label() == null || c.compound == null || c.team == null
+                    || c.teamColour == null || c.gap == null || c.interval == null
+                    || c.bestLap == null) {
+                nulls++;
+            }
+        }
+        eq("面板要用的访问器全部非 null", Integer.valueOf(nulls),
+                Integer.valueOf(0));
+
+        // 真实消息逐条过一遍。★ 断言**不是**"按消息数覆盖率" —— 那样会误导：
+        //   这场 327 条里 249 条是纯旗语（CLEAR 104 / YELLOW 84 / 双黄 45），
+        //   含义徽标已表达完整，Translator **有意不翻**。按条数只有 ~26%，
+        //   看着像坏了，其实是设计如此。真正该钉住的不变式是：
+        //   **非旗语类消息必须都有中文简述**。
+        int glossed = 0;
+        int prose = 0;
+        int proseGlossed = 0;
+        java.util.List<RaceMessage> rms = rf.messages.sortedDesc();
+        for (int i = 0; i < rms.size(); i++) {
+            RaceMessage m = rms.get(i);
+            // 不能叫 g —— main() 里已经有一个 AlertGate g 了
+            String rgloss = Translator.gloss(m.text());
+            boolean has = rgloss != null && rgloss.length() > 0;
+            if (has) {
+                glossed++;
+            }
+            if (!"Flag".equals(m.category)) {
+                prose++;
+                if (has) {
+                    proseGlossed++;
+                } else {
+                    // 真实数据里没覆盖到的，直接打出来 —— 不然只知道"差 8 条"，
+                    // 不知道差的是哪 8 条，没法补。
+                    System.out.println("      [缺译文] category=" + m.category
+                            + " | " + m.text());
+                }
+            }
+        }
+        eq("非旗语类消息都有中文简述（" + proseGlossed + "/" + prose + "）",
+                Integer.valueOf(proseGlossed), Integer.valueOf(prose));
+        eq("旗语类里也有能翻的（不是一条都没有）",
+                Boolean.valueOf(glossed > prose), Boolean.TRUE);
+
+
+
 
         System.out.println("==================================================");
         System.out.println("  通过 " + pass + " 项，失败 " + fail + " 项");

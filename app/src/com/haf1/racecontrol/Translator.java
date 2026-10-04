@@ -49,6 +49,10 @@ public final class Translator {
      * 严格要求 "CAR " 会漏掉一大半。
      * 所以直接匹配裸的「数字 (三字母)」。
      */
+    /** 译文里用得很多的中文破折号（两个 em dash）。
+     * 不直接写字面量是为了避免源码编码差异带来的麦当当。 */
+    private static final String DASH = "\u2014\u2014";
+
     private static final Pattern CAR = Pattern.compile("(\\d{1,2})\\s*\\(([A-Z]{3})\\)");
     private static final Pattern TURN = Pattern.compile("TURN\\s+(\\d+)");
     private static final Pattern LAP = Pattern.compile("LAP\\s+(\\d+)");
@@ -56,9 +60,44 @@ public final class Translator {
     private static final Pattern SECONDS = Pattern.compile("(\\d+)\\s*SECOND");
     /** 排位赛阶段。真实数据里有 `FIA STEWARDS: Q1 INCIDENT INVOLVING CARS 81 (PIA), ...` —— */
     private static final Pattern PHASE = Pattern.compile("\\b(Q[123])\\b");
-    private static final Pattern RAIN = Pattern.compile("RISK OF RAIN FOR (.+?) IS (\\d+)%");
+    // ★ 真实数据里数字和 % 中间**有空格**（`IS 0 %`），
+    //   原来的 `(\\d+)%` 要求紧贴，13 条雨情消息全部漏掉。
+    private static final Pattern RAIN = Pattern.compile("RISK OF RAIN FOR (.+?) IS (\\d+)\\s*%");
     /** `Q1 WILL START AT 16:04` / `Q2 ...` / `Q3 ...`。 */
     private static final Pattern WILL_START = Pattern.compile("\\b(Q[123])\\b WILL START AT (\\d{1,2}:\\d{2})");
+    /** DR1S 分区：`DRS ENABLED IN ZONE 1`。 */
+    private static final Pattern DRS_ZONE = Pattern.compile(
+            "DRS (?:ENABLED|DISABLED) IN ZONE (\\d+)");
+    /** `AIR TEMPERATURE 1 HOUR BEFORE P1 = 28.3 DEGREES`。 */
+    private static final Pattern AIR_TEMP = Pattern.compile(
+            "AIR TEMPERATURE (.+?) = ([\\d.]+) DEGREES");
+    /** `SESSION TEMPERATURES: AIR = 20, TRACK = 38`。 */
+    private static final Pattern SESSION_TEMPS = Pattern.compile(
+            "SESSION TEMPERATURES:\\s*AIR\\s*=\\s*(-?[\\d.]+)\\s*,\\s*TRACK\\s*=\\s*(-?[\\d.]+)");
+    /** `SESSION WILL END AT 20:00`。 */
+    private static final Pattern SESSION_END_AT = Pattern.compile(
+            "SESSION WILL END AT\\s*([\\d:]+)");
+    /** `CAR 30 (LAW) TIME 1:37.515 WILL BE REINSTATED`。 */
+    private static final Pattern REINSTATE_TIME = Pattern.compile(
+            "TIME\\s+([\\d:.]+)\\s+WILL BE REINSTATED");
+    /** `CAR 55 (SAI) LAP 1 WILL BE REINSTATED`。 */
+    private static final Pattern REINSTATE_LAP = Pattern.compile(
+            "LAP\\s+(\\d+)\\s+WILL BE REINSTATED");
+    /** `FREE PRACTICE 1 WILL BE EXTENDED BY A FURTHER 15 MINUTES`。 */
+    private static final Pattern EXTENDED = Pattern.compile(
+            "(FREE PRACTICE \\d) WILL BE EXTENDED BY (?:A FURTHER )?(\\d+) MINUTES");
+    /** `Q1 WILL RESUME AT 16:19` / `RACE WILL START AT 16:33` / `FORMATION LAP WILL START AT 15:40`。 */
+    private static final Pattern WILL_START_ANY = Pattern.compile(
+            "^(.+?) WILL (RESUME|START) AT (\\d{1,2}:\\d{2})");
+    /** `ESTIMATED TIME OF SESSION START - 12:45`。 */
+    private static final Pattern ESTIMATED = Pattern.compile(
+            "ESTIMATED TIME OF (.+?) (START|RESUMPTION) - (\\d{1,2}:\\d{2})");
+    /** `RESUMPTION ORDER: 1, 12, 63` / `PUSH CARS TO FRONT IN ORDER: 41, 23`。 */
+    private static final Pattern ORDER = Pattern.compile(
+            "(?:RESUMPTION ORDER|PUSH CARS TO FRONT IN ORDER): (.+)$");
+    /** `LAP TIME OF CAR 87 (BEA) - UNDER REVIEW`。 */
+    private static final Pattern LAP_REVIEW = Pattern.compile(
+            "LAP TIME OF CAR (\\d+)\\s*\\(([A-Z]{3})\\)\\s*-\\s*UNDER REVIEW");
 
     /** 三位缩写 -> 中文姓氏。用数据里实际出现过的车手，查不到就退回缩写。 */
     private static final Map<String, String> DRIVERS = new HashMap<String, String>();
@@ -126,6 +165,12 @@ public final class Translator {
             {"UNSAFE RELEASE", "不安全放车"},
             {"IMPEDING", "阻挡他人"},
             {"TRACK LIMITS", "超出赛道限制"},
+            {"SAFETY CAR PROCEDURE INFRINGEMENT", "安全车程序违规"},
+            {"STARTING PROCEDURE INFRINGEMENT", "起步程序违规"},
+            {"DRIVING ERRATICALLY OR IN A POTENTIALLY DANGEROUS MANNER", "危险驾驶"},
+            {"DRIVING ERRATICALLY", "危险驾驶"},
+            {"UNSAFE CONDITION", "不安全状况"},
+            {"PRACTICE START INFRINGEMENT", "练习起步违规"},
     };
 
     /**
@@ -160,7 +205,24 @@ public final class Translator {
             return "赛会判罚测试";
         }
 
-        String g = penalty(up);
+        // `CORRECTION: ...` / `CORRECTION - ...` / `CORRECTION:: ...`：
+        // 把前缀剥掉后**递归译**，前面加「更正：」。
+        if (up.startsWith("CORRECTION")) {
+            String rest = up.replaceFirst("^CORRECTION[:\\-]*\\s*", "");
+            String inner = gloss(rest);
+            return inner == null ? "更正消息：" + rest
+                    : "更正：" + inner;
+        }
+        if (up.startsWith("TEST: ")) {
+            String inner = gloss(up.substring(6));
+            return inner == null ? null : "测试：" + inner;
+        }
+
+        String g = reprimand(up);
+        if (g != null) {
+            return g;
+        }
+        g = penalty(up);
         if (g != null) {
             return g;
         }
@@ -257,10 +319,10 @@ public final class Translator {
             verdict = "复核完毕，不予追究";
         } else if (up.indexOf("NO FURTHER ACTION") >= 0) {
             verdict = "不予追究";
-        } else if (up.indexOf("WILL BE INVESTIGATED AFTER THE SESSION") >= 0
-                || up.indexOf("WILL BE INVESTIGATED AFTER THE RACE") >= 0) {
-            // ★ 只认 SESSION 不认 RACE，结果新周末 4 条「赛后再查」整条翻不出来。
-            //   `... WILL BE INVESTIGATED AFTER THE RACE - YELLOW FLAG INFRINGEMENT`
+        } else if (up.indexOf("WILL BE INVESTIGATED AFTER THE") >= 0) {
+            // ★ 原来只认 SESSION / RACE 两种，而真实数据里还有
+            //   ... AFTER THE SPRINT / AFTER THE QUALIFYING
+            //   三年语料里这类一共二十多条。改成只认前半截。
             verdict = "赛后调查";
         } else if (up.indexOf("UNDER INVESTIGATION") >= 0) {
             verdict = "调查中";
@@ -399,6 +461,266 @@ public final class Translator {
      * 这些句式来自一个完整比赛周末的 697 条真实消息，一条不编。
      */
     private static String other(String up) {
+        // ---- 2024~2026 三年语料补齐（193 个缺口 / 110 个句式家族）----
+        // 顺序要紧：带具体前缀、带 AT hh:mm 的，必须排在通用规则前面。
+
+        // 封闭车检区（PARC FERME）：`F1 - POST-SPRINT PARC FERME - WORK MAY COMMENCE AT 12:58`
+        if (up.indexOf("PARC FERME") >= 0 && up.indexOf("WORK MAY COMMENCE AT") >= 0) {
+            Matcher pf = Pattern.compile("POST-(.+?) PARC FERME").matcher(up);
+            String which = pf.find() ? subjectOf(pf.group(1)) : "";
+            String t = clock(up);
+            return join(which, "封闭车检区：作业可于 "
+                    + (t.length() > 0 ? t : "稍后") + " 开始");
+        }
+        // 起步程序
+        if (up.indexOf("START ABORTED - EXTRA FORMATION LAP") >= 0) {
+            return "起步中止 " + DASH + " 增加一圈编队圈";
+        }
+        if (up.indexOf("EXTRA FORMATION LAP") >= 0) {
+            return "增加一圈编队圈";
+        }
+        if (up.indexOf("ABORTED START") >= 0) {
+            return "起步中止";
+        }
+        if (up.indexOf("STARTING PROCEDURE SUSPENDED") >= 0) {
+            return "起步程序暂停";
+        }
+        if (up.indexOf("NO PRACTICE STARTS") >= 0) {
+            return "本轮不允许练习起步";
+        }
+        if (up.indexOf("START ORDER: ORIGINAL GRID") >= 0) {
+            return "起步顺序：按原始发车顺位";
+        }
+        if (up.indexOf("RACE WILL START BEHIND THE SAFETY CAR") >= 0) {
+            return "正赛将在安全车后起步";
+        }
+        if (up.indexOf("FORMATION LAP(S) BEHIND SAFETY CAR") >= 0
+                || up.indexOf("FORMATION LAP WILL BE STARTED BEHIND THE SAFETY CAR") >= 0) {
+            return "编队圈在安全车后";
+        }
+        if (up.indexOf("ROLLING START") >= 0) {
+            return "滚动起步";
+        }
+        if (up.indexOf("STANDING START") >= 0) {
+            return "静止起步";
+        }
+        if (up.indexOf("SPRINT START") >= 0) {
+            return "冲刺赛起步";
+        }
+
+        // ---- ★ 收紧体检白名单后才露出来的最后一批缺口 ----
+        // 这 9 条在三年官方归档语料里**真实出现过**，每条只出现 1 次。
+        // 之前看不到，是因为体检脚本的白名单用了 `SAFETY CAR.*` 这类通配，
+        // 把它们算成了"设计如此"。通配符写下去的那一刻，它盖住的东西
+        // 就再也看不见了 —— 这是那次最该记住的教训。
+        Matcher stim = SESSION_TEMPS.matcher(up);
+        if (stim.find()) {
+            return "环节温度：气温 " + stim.group(1)
+                    + "°C / 赛道 " + stim.group(2) + "°C";
+        }
+        Matcher send = SESSION_END_AT.matcher(up);
+        if (send.find()) {
+            return "环节将于 " + send.group(1) + " 结束";
+        }
+        if (up.indexOf("RED FLAG - RACE SUSPENDED") >= 0) {
+            return "红旗：比赛暂停";
+        }
+        if (up.indexOf("SAFETY CAR THROUGH THE PIT LANE") >= 0) {
+            return "安全车通过维修区";
+        }
+        if (up.indexOf("SAFETY CAR WILL USE START/FINISH STRAIGHT") >= 0) {
+            return "安全车将使用起终点直道";
+        }
+        if (up.indexOf("VIRTUAL SAFETY CAR ENDING") >= 0
+                || up.indexOf("VSC ENDING") >= 0) {
+            return "虚拟安全车结束";
+        }
+
+        // ★ 安全车 / 虚拟安全车的**状态变化**。这 5 条是按官方归档的原始
+        //   文案补的（2026 Bahrain 真实快照）：三年 HA 语料里没有它们，
+        //   因为上游集成改写过措辞，所以"0 缺口"当初只对 HA 那套成立。
+        //   它们标出安全车区间的起止，不是可有可无的重复信息。
+        //   注意顺序：先判更长的、更具体的，再判短的。
+        if (up.indexOf("SAFETY CAR LIGHTS ON") >= 0) {
+            return "安全车灯亮起";
+        }
+        if (up.indexOf("SAFETY CAR LIGHTS OFF") >= 0) {
+            return "安全车灯熄灭";
+        }
+        if (up.indexOf("SAFETY CAR DEPLOYED") >= 0) {
+            return "安全车出动";
+        }
+        if (up.indexOf("SAFETY CAR IN THIS LAP") >= 0) {
+            return "安全车本圈进站";
+        }
+        if (up.indexOf("VSC DEPLOYED") >= 0) {
+            return "虚拟安全车出动";
+        }
+
+        // 2026 新规：抓地力 / 直线模式
+        if (up.indexOf("LOW GRIP DELTA ACTIVE") >= 0) {
+            return "低抓地力：圈速差限制生效";
+        }
+        if (up.indexOf("NORMAL GRIP DELTA ACTIVE") >= 0) {
+            return "正常抓地力：圈速差限制生效";
+        }
+        if (up.indexOf("LOW GRIP CONDITIONS") >= 0) {
+            return "赛道低抓地力";
+        }
+        if (up.indexOf("NORMAL GRIP CONDITIONS") >= 0) {
+            return "赛道抓地力正常";
+        }
+        if (up.indexOf("STRAIGHT MODE - LOW GRIP") >= 0) {
+            return "直线模式：低抓地力";
+        }
+        if (up.indexOf("STRAIGHT MODE - NORMAL GRIP") >= 0) {
+            return "直线模式：正常抓地力";
+        }
+        if (up.indexOf("STRAIGHT MODE - DISABLED") >= 0) {
+            return "直线模式：关闭";
+        }
+
+        // DRS
+        Matcher dz = DRS_ZONE.matcher(up);
+        if (dz.find()) {
+            return ("DRS" + (up.indexOf("ENABLED") >= 0 ? "启用" : "关闭"))
+                    + "（" + dz.group(1) + " 区）";
+        }
+        if (up.indexOf("DRS ENABLED") >= 0) {
+            return "DRS 启用";
+        }
+        if (up.indexOf("DRS DISABLED") >= 0) {
+            return "DRS 关闭";
+        }
+
+        // 天气 / 环境
+        if (up.indexOf("WEATHER RADAR SYSTEM NOT AVAILABLE") >= 0) {
+            return "天气雷达不可用";
+        }
+        if (up.indexOf("WEATHER RADAR SYSTEM NOW OPERATIONAL") >= 0) {
+            return "天气雷达恢复可用";
+        }
+        if (up.indexOf("CHANGE IN CLIMATIC CONDITIONS") >= 0) {
+            return "天气状况发生变化";
+        }
+        if (up.indexOf("WET TRACK") >= 0) {
+            return "赛道湿滑";
+        }
+        if (up.indexOf("AWNINGS MAY BE USED") >= 0) {
+            return "可以使用遮阳棚";
+        }
+        if (up.indexOf("AWNINGS TO BE REMOVED") >= 0) {
+            return "需要撤除遮阳棚";
+        }
+        Matcher airt = AIR_TEMP.matcher(up);
+        if (airt.find()) {
+            return "赛前气温通报（" + airt.group(1) + "）：" + airt.group(2) + " 度";
+        }
+
+        // 维修区入口 / 维修车
+        if (up.indexOf("PIT LANE ENTRY OPEN") >= 0) {
+            return "维修区入口开放";
+        }
+        if (up.indexOf("PIT LANE ENTRY CLOSED") >= 0) {
+            return "维修区入口关闭";
+        }
+        if (up.indexOf("RECOVERY VEHICLE IN PIT ENTRY") >= 0) {
+            return "维修区入口有维修车";
+        }
+        if (up.indexOf("ALL CARS TO FOLLOW THE SAFETY CAR THROUGH THE PIT LANE") >= 0) {
+            return "所有赛车跟随安全车通过维修区";
+        }
+
+        // 维修区事故（不一定带 FIA STEWARDS 前缀，也不一定有 NOTED）
+        if (up.indexOf("PIT LANE INCIDENT INVOLVING") >= 0) {
+            String w = who(up);
+            String r = reason(up);
+            return "维修区事故（" + (w.length() > 0 ? w : "某车手") + "）"
+                    + (up.indexOf("WILL BE INVESTIGATED") >= 0 ? "：赛后调查" : "：已记录")
+                    + (r.length() > 0 ? " " + DASH + " " + r : "");
+        }
+
+        // 圈速「恢复」（删了又撤销）
+        Matcher rt = REINSTATE_TIME.matcher(up);
+        if (rt.find()) {
+            String w = who(up);
+            return (w.length() > 0 ? w : "某车手") + "：单圈成绩恢复（" + rt.group(1) + "）";
+        }
+        Matcher rl = REINSTATE_LAP.matcher(up);
+        if (rl.find()) {
+            String w = who(up);
+            return (w.length() > 0 ? w : "某车手") + "：第 " + rl.group(1) + " 圈成绩恢复";
+        }
+
+        // 圈速审核 / 调查
+        Matcher lr = LAP_REVIEW.matcher(up);
+        if (lr.find()) {
+            return name(lr.group(2)) + "(" + lr.group(1) + ")：圈速审核中";
+        }
+        if (up.indexOf("LAP TIME UNDER INVESTIGATION") >= 0) {
+            String w = who(up);
+            String t = clock(up);
+            return (w.length() > 0 ? w : "某车手") + "：圈速调查中 " + DASH
+                    + " 超出赛道限制" + (t.length() > 0 ? "（" + t + "）" : "");
+        }
+
+        // 练习赛延长
+        Matcher ex = EXTENDED.matcher(up);
+        if (ex.find()) {
+            return session(ex.group(1)) + "延长 " + ex.group(2) + " 分钟";
+        }
+
+        // 环境开始 / 重启时刻
+        Matcher wa = WILL_START_ANY.matcher(up);
+        if (wa.find()) {
+            boolean resume = "RESUME".equals(wa.group(2));
+            return join(subjectOf(wa.group(1)), "将于 " + wa.group(3)
+                    + (resume ? " 重启" : " 开始"));
+        }
+        if (up.indexOf("WILL NOT BE RESUMED") >= 0) {
+            return subjectOf(up.replace(" WILL NOT BE RESUMED", "")) + " 不再重启";
+        }
+        if (up.indexOf("START OF ") >= 0 && up.indexOf(" WILL BE DELAYED") >= 0) {
+            String mid = up.substring(up.indexOf("START OF ") + 9);
+            mid = mid.substring(0, mid.indexOf(" WILL BE DELAYED"));
+            // 用「将推迟开始」而不是「推迟开始」：与 v2.0.9 那条只认
+            // QUALIFYING 的规则保持一致（单元测试钉的就是这个措辞），
+            // 而且中文里多个「将」更顺。这条通用规则覆盖了
+            // Q2/Q3/SQ2/SQ3/FREE PRACTICE n/SESSION 等全部变体。
+            return join(subjectOf(mid), "将推迟开始");
+        }
+        Matcher et = ESTIMATED.matcher(up);
+        if (et.find()) {
+            return join("预计 " + subjectOf(et.group(1)),
+                        "将于 " + et.group(3)
+                        + ("RESUMPTION".equals(et.group(2)) ? " 重启" : " 开始"));
+        }
+
+        // 重启 / 推行顺序
+        Matcher od = ORDER.matcher(up);
+        if (od.find()) {
+            return (up.startsWith("PUSH CARS") ? "把赛车推至前列，顺序："
+                    : "重启顺序：") + od.group(1);
+        }
+        if (up.indexOf("RESUMPTION TEST ABORTED") >= 0) {
+            return "重启测试中止";
+        }
+        if (up.indexOf("TRACK TEST COMPLETED") >= 0) {
+            return "赛道测试完成";
+        }
+        if (up.indexOf("THIS IS A TEST MESSAGE FROM RACE CONTROL") >= 0) {
+            return "赛会测试消息";
+        }
+        if (up.indexOf("BLACK AND ORANGE FLAG") >= 0) {
+            String w = who(up);
+            return "黑橙旗（机械故障）：" + (w.length() > 0 ? w : "某车手");
+        }
+        if (up.indexOf("LIGHT BLUE HEAD PADDING MATERIAL MUST BE USED") >= 0) {
+            return "必须使用浅蓝色头枕垫料";
+        }
+        if (up.indexOf("BLUE HEAD PADDING MATERIAL MUST BE USED") >= 0) {
+            return "必须使用蓝色头枕垫料";
+        }
         // ---- 2026-09-24~26 新周末出现的指令 ----
         // 这五条都是安全车 / 排位赛期间的操作指令，徽标只能说「其它」。
         if (up.indexOf("ALL CARS THROUGH THE PIT LANE") >= 0) {
@@ -419,7 +741,10 @@ public final class Translator {
         if (ws.find()) {
             return ws.group(1) + " 将于 " + ws.group(2) + " 开始";
         }
-        if (up.indexOf("LAPPED CARS MAY NOW OVERTAKE THE SAFETY CAR") >= 0) {
+        // ★ 真实数据里**单复数都有**：
+        //   `LAPPED CARS MAY NOW ...` 和 `LAPPED CAR MAY NOW ...`
+        if (up.indexOf("LAPPED CAR") >= 0
+                && up.indexOf("OVERTAKE THE SAFETY CAR") >= 0) {
             // 冒号后面是车号（用户确认）。
             String n = afterColon(up);
             return "被套圈车可超越安全车"
@@ -505,7 +830,13 @@ public final class Translator {
             return en.trim();
         }
         String kind;
-        if (s.indexOf("FREE PRACTICE 1") >= 0) {
+        if (s.indexOf("FIRST PRACTICE SESSION") >= 0) {
+            kind = "一练";
+        } else if (s.indexOf("SECOND PRACTICE SESSION") >= 0) {
+            kind = "二练";
+        } else if (s.indexOf("THIRD PRACTICE SESSION") >= 0) {
+            kind = "三练";
+        } else if (s.indexOf("FREE PRACTICE 1") >= 0) {
             kind = "一练";
         } else if (s.indexOf("FREE PRACTICE 2") >= 0) {
             kind = "二练";
@@ -600,6 +931,82 @@ public final class Translator {
             return m.group(1);
         }
         return "";
+    }
+
+    /**
+     * 训诫：`FIA STEWARDS: REPRIMAND (DRIVING) FOR CAR 23 (ALB) - ...`。
+     * 不是罚时，也不是常见的仲裁结论，单独一支。
+     */
+    private static String reprimand(String up) {
+        if (up.indexOf("REPRIMAND") < 0) {
+            return null;
+        }
+        String w = who(up);
+        String r = reason(up);
+        StringBuilder b = new StringBuilder("★ 训诫：");
+        b.append(w.length() > 0 ? w : "某车手");
+        if (up.indexOf("(DRIVING)") >= 0) {
+            b.append("（驾驶行为）");
+        }
+        if (r.length() > 0) {
+            b.append(" —— ").append(r);
+        }
+        return b.toString();
+    }
+
+    /**
+     * 环节名 -> 中文。比 {@link #session} 宽松：
+     * 后者只认 `F1/F2/F3 <类型>`，而这里还要认 `SESSION` / `FORMATION LAP` / `SQn`。
+     */
+    static String subjectOf(String en) {
+        String s = en == null ? "" : en.trim().toUpperCase(Locale.US);
+        if (s.length() == 0) {
+            return "比赛";
+        }
+        if (s.indexOf("FORMATION LAP") >= 0) {
+            return "编队圈";
+        }
+        if (s.indexOf("FIRST PRACTICE") >= 0 || s.indexOf("FREE PRACTICE 1") >= 0) {
+            return "一练";
+        }
+        if (s.indexOf("SECOND PRACTICE") >= 0 || s.indexOf("FREE PRACTICE 2") >= 0) {
+            return "二练";
+        }
+        if (s.indexOf("THIRD PRACTICE") >= 0 || s.indexOf("FREE PRACTICE 3") >= 0) {
+            return "三练";
+        }
+        if (s.indexOf("SPRINT QUALIFYING") >= 0) {
+            return "冲刺排位";
+        }
+        if (s.indexOf("SPRINT") >= 0) {
+            return "冲刺赛";
+        }
+        if (s.indexOf("RACE") >= 0) {
+            return "正赛";
+        }
+        if (s.indexOf("QUALIFYING") >= 0) {
+            return "排位赛";
+        }
+        if (s.indexOf("SESSION") >= 0) {
+            return "比赛";
+        }
+        if (s.matches("SQ[123]")) {
+            return s;
+        }
+        Matcher q = PHASE.matcher(s);
+        if (q.find()) {
+            return q.group(1);
+        }
+        return en.trim();
+    }
+
+    /** 中文直接接；英文/数字之间补一个空格（`Q1 将于`）。 */
+    private static String join(String a, String b) {
+        if (a.length() == 0) {
+            return b;
+        }
+        char c = a.charAt(a.length() - 1);
+        return (c < 128 && Character.isLetterOrDigit(c)) ? a + " " + b : a + b;
     }
 
     /** 冒号后面那串数字：`... SAFETY CAR: 77` -> "77"。 */

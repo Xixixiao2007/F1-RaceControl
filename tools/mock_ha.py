@@ -268,6 +268,32 @@ def load_rows(path):
     return rows
 
 
+def shift_rows_to_now(rows, tail_seconds=5.0):
+    """把整段数据的**结束时刻**平移到「现在」。
+
+    为什么需要：数据文件的 last_changed 是录制时固定的，而客户端取历史
+    用的是「现在往前 N 小时」。日子一久整段数据就落到窗口之外 ——
+    测试会返回 0 条，看起来像客户端坏了。
+    （实测：2026-09-26 写的 e2e，到 2026-10-04 就红了。）
+
+    平移不改变**相对**时间关系，所以依赖时长/间隔的断言不受影响。
+    """
+    if not rows:
+        return rows
+    last = parse_iso_param(rows[-1].get("last_changed") or "")
+    if not last:
+        return rows
+    delta = (datetime.datetime.now(datetime.timezone.utc) - last
+             + datetime.timedelta(seconds=tail_seconds))
+    cols = ("last_changed", "last_updated", "last_reported")
+    for rec in rows:
+        for col in cols:
+            dt = parse_iso_param(rec.get(col) or "")
+            if dt:
+                rec[col] = (dt + delta).isoformat()
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # 剧本
 # ---------------------------------------------------------------------------
@@ -560,6 +586,13 @@ class MockHA:
     def load(self):
         if os.path.exists(self.data_path):
             self.rows = load_rows(self.data_path)
+            # --shift-to-now：把整段数据平移到「现在」结束。
+            # 只有必须让数据落在近期窗口内的用例（REST 历史回放）才打开；
+            # 默认关闭，避免影响依赖绝对时间戳的测试。
+            if getattr(self.args, "shift_to_now", False):
+                shift_rows_to_now(self.rows)
+                _log("已把 %d 条数据平移到「现在」结束（--shift-to-now）"
+                     % len(self.rows))
             if self.rows:
                 first = parse_iso_param(self.rows[0]["last_changed"])
                 last = parse_iso_param(self.rows[-1]["last_changed"])
@@ -1362,6 +1395,11 @@ def build_parser():
     p.add_argument("--start-offset", type=float, default=0.0,
                    help="回放开始前先空转 N 秒（赛前状态，/api/states 为 unavailable）。"
                         "想从比赛中间开始、或想验证 App 的\"无比赛\"显示时用得上")
+    p.add_argument("--shift-to-now", action="store_true",
+                   help="载入真实数据后把整段平移到「现在」结束。\n"
+                        "数据文件的时间戳是录制时固定的，而客户端取历史"
+                        "用的是「现在往前 N 小时」—— 日子一久就取不到。\n"
+                        "REST 历史回放的 e2e 必须打开这个开关。")
     p.add_argument("--scenario", default="",
                    help="直接跑剧本，忽略真实数据：%s" % ", ".join(sorted(SCENARIOS)))
     p.add_argument("--entity", default="sensor.f1_race_control_2", help="实体 ID")

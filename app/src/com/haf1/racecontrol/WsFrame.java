@@ -118,6 +118,37 @@ public class WsFrame {
         return new WsFrame(fin, opcode, payload);
     }
 
+
+    /**
+     * 读**一整条消息**，自动拼接分片帧。
+     *
+     * ★ 为什么必须做：F1 官方实时流的初始快照有几十 KB（一节的
+     *   RaceControlMessages、TimingData 全在里面），服务端会拆成多个帧 ——
+     *   首帧 opcode = TEXT/BIN 且 FIN=0，后续 opcode = CONT(0)，最后一帧 FIN=1。
+     *   只调 read() 会把**半截 JSON** 交出去。这个坑在 Python 侧实测踩过：
+     *   解析报错，而报错信息看起来像服务端发了坏数据。
+     *
+     * 控制帧（PING/PONG/CLOSE）可以插在分片中间，遇到就直接返回给调用方
+     * （PING 要回 PONG，CLOSE 要断开），不参与拼接。
+     */
+    public static WsFrame readMessage(InputStream in) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        int firstOp = -1;
+        while (true) {
+            WsFrame f = read(in);
+            if (f.opcode == OP_CLOSE || f.opcode == OP_PING || f.opcode == OP_PONG) {
+                return f;
+            }
+            if (f.opcode != OP_CONT) {
+                firstOp = f.opcode;
+            }
+            buf.write(f.payload, 0, f.payload.length);
+            if (f.fin) {
+                return new WsFrame(true, firstOp < 0 ? OP_TEXT : firstOp, buf.toByteArray());
+            }
+        }
+    }
+
     private static int readByte(InputStream in) throws IOException {
         int v = in.read();
         if (v < 0) {

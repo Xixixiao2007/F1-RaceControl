@@ -16,8 +16,8 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.haf1.racecontrol"
-    android:versionCode="10"
-    android:versionName="2.0.9">
+    android:versionCode="15"
+    android:versionName="3.0.0">
 
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="23" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -30,15 +30,29 @@
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
+        <!--
+          A 方案的主界面：直连 F1 官方公开流，**不带任何令牌**。
+
+          configChanges 里声明了方向，所以转屏不会重建 Activity
+          （重建就会新建一个 F1Client、重新连一次、已收的消息全丢）。
+          布局在 onConfigurationChanged 里重建。
+        -->
         <activity
-            android:name=".MainActivity"
+            android:name=".F1MainActivity"
             android:label="F1 Race Control"
-            android:exported="true">
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 旧的 HA 版主界面：不再做入口，但代码保留。 -->
+        <activity
+            android:name=".MainActivity"
+            android:label="F1 Race Control (HA)"
+            android:exported="false" />
 
         <activity
             android:name=".SettingsActivity"

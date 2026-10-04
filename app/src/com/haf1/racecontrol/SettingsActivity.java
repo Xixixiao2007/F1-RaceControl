@@ -21,26 +21,21 @@ import android.widget.TextView;
 /**
  * 设置页。
  *
- * 分组：连接 / 显示与过滤 / 提醒。所有数值项都给默认值并做钳制，
- * 用户填了离谱的值也不会把 App 搞坏。
+ * 分组：数据源 / 显示与过滤 / 提醒 / 试听 / 关于。
+ *
+ * ★ A 方案下已经**没有任何连接参数要填**：不需要服务器地址、
+ *   不需要令牌、不需要实体 ID。联网那一步完全由 App 自己完成。
  */
 public class SettingsActivity extends Activity {
 
     private Prefs p;
 
-    private EditText baseBox;
-    private EditText tokenBox;
-    private EditText entityBox;
-    private EditText hoursBox;
-    private EditText pollBox;
     private EditText carBox;
     private EditText excludeBox;
     private EditText cooldownBox;
     private EditText dySecondsBox;
     private EditText autoStopBox;
-    private EditText connWarnBox;
 
-    private CheckBox realtimeBox;
     private CheckBox flashBox;
     private CheckBox keepScreenBox;
     private CheckBox noiseBox;
@@ -74,18 +69,19 @@ public class SettingsActivity extends Activity {
         root.setPadding(dp(16), dp(14), dp(16), dp(24));
         root.setBackgroundColor(0xFFFAFAFA);
 
-        header(root, "连接");
-
-        baseBox = field(root, "服务器地址", p.base,
-                "例如 http://homeassistant.local:8123 或 http://bh4gzk.top:8123");
-        tokenBox = field(root, "长期访问令牌", p.token,
-                "HA 网页版 → 个人资料 → 安全 → 长期访问令牌。普通权限用户即可。");
-        tokenBox.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        entityBox = field(root, "实体 ID", p.entityId,
-                "上游集成 Nicxe/f1_sensor 的赛事控制实体，通常以 _race_control 结尾。");
+        header(root, "数据源");
+        label(root, "F1 官方公开流（直连，不需要任何账号或令牌）",
+                "A 方案：App 直接连 Formula 1 官方的实时计时服务。"
+                        + "数据和 Home Assistant、和中继服务器都没有关系。"
+                        + "公开流包含赛事控制消息、赛道状态、计时、轮胎、天气；"
+                        + "需要 F1TV 订阅的那几路（遥测、赛道位置、车队无线电）"
+                        + "本 App 一个都不用。");
+        label(root, "livetiming.formula1.com",
+                "连接时只用一个**一次性**令牌，每次重连都会重新申请；"
+                        + "App 里不保存任何凭据，你也不需要填任何东西。");
 
         Button test = new Button(this);
-        test.setText("测试连接");
+        test.setText("测试能否连上官方流");
         test.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 testConnection();
@@ -100,12 +96,6 @@ public class SettingsActivity extends Activity {
 
         header(root, "显示与过滤");
 
-        hoursBox = number(root, "启动时回溯小时数", String.valueOf(p.historyHours),
-                "带上属性后历史响应会变大，建议 6~12 小时。");
-        pollBox = number(root, "轮询间隔（秒）", String.valueOf(p.pollSeconds),
-                "实时断开时的兜底刷新间隔。");
-        realtimeBox = check(root, "使用 WebSocket 实时推送", p.realtimeEnabled,
-                "开启后延迟约 50~150 毫秒；关闭则退回 REST 轮询（约 3.5 秒）。");
         flashBox = check(root, "新消息闪动", p.flashEnabled,
                 "到达的新消息先闪两下再定格配色。历史回填不会闪。");
         keepScreenBox = check(root, "看消息时不熄屏（一直亮屏）", p.keepScreenOn,
@@ -142,8 +132,6 @@ public class SettingsActivity extends Activity {
                 String.valueOf(p.alarmAutoStopSec), "默认 15 秒。");
         cooldownBox = number(root, "同类型提醒冷却（秒）", String.valueOf(p.cooldownSec),
                 "避免连环炸响。红旗不受此限制。");
-        connWarnBox = number(root, "断线多久后告警（秒）", String.valueOf(p.connectionWarnSec),
-                "比赛中掉线最危险 —— 你会以为赛道没消息，实际是漏了红旗。");
 
         // ---- 试听：不用连 HA 也能当场验证声音和震动 ----
         // 光看设置项没法知道"到底响不响、震不震得出来"，
@@ -236,14 +224,10 @@ public class SettingsActivity extends Activity {
         root.addView(save, sp);
 
         Button defaults = new Button(this);
-        defaults.setText("恢复默认（不动地址与令牌）");
+        defaults.setText("恢复默认");
         defaults.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                Prefs d = new Prefs();
-                d.base = p.base;
-                d.token = p.token;
-                d.entityId = p.entityId;
-                p = d;
+                p = new Prefs();
                 fill();
             }
         });
@@ -375,12 +359,6 @@ public class SettingsActivity extends Activity {
     // ------------------------------------------------------------------
 
     private void collect() {
-        p.base = baseBox.getText().toString().trim();
-        p.token = tokenBox.getText().toString().trim();
-        p.entityId = entityBox.getText().toString().trim();
-        p.historyHours = Prefs.clamp(parse(hoursBox.getText().toString(), 12), 1, 168);
-        p.pollSeconds = Prefs.clampPoll(parse(pollBox.getText().toString(), 2));
-        p.realtimeEnabled = realtimeBox.isChecked();
         p.flashEnabled = flashBox.isChecked();
         p.keepScreenOn = keepScreenBox.isChecked();
         p.noiseFilterEnabled = noiseBox.isChecked();
@@ -397,25 +375,15 @@ public class SettingsActivity extends Activity {
         p.attentionEnabled = attentionBox.isChecked();
         p.alarmAutoStopSec = Prefs.clamp(parse(autoStopBox.getText().toString(), 15), 0, 120);
         p.cooldownSec = Prefs.clamp(parse(cooldownBox.getText().toString(), 60), 0, 600);
-        p.connectionWarnSec = Prefs.clamp(parse(connWarnBox.getText().toString(), 45), 10, 600);
         p.dyMode = Prefs.clamp(dySpinner.getSelectedItemPosition(), 0, 3);
         p.dyEscalateSec = Prefs.clamp(parse(dySecondsBox.getText().toString(), 15), 1, 120);
 
-        hoursBox.setText(String.valueOf(p.historyHours));
-        pollBox.setText(String.valueOf(p.pollSeconds));
         autoStopBox.setText(String.valueOf(p.alarmAutoStopSec));
         cooldownBox.setText(String.valueOf(p.cooldownSec));
-        connWarnBox.setText(String.valueOf(p.connectionWarnSec));
         dySecondsBox.setText(String.valueOf(p.dyEscalateSec));
     }
 
     private void fill() {
-        baseBox.setText(p.base);
-        tokenBox.setText(p.token);
-        entityBox.setText(p.entityId);
-        hoursBox.setText(String.valueOf(p.historyHours));
-        pollBox.setText(String.valueOf(p.pollSeconds));
-        realtimeBox.setChecked(p.realtimeEnabled);
         flashBox.setChecked(p.flashEnabled);
         keepScreenBox.setChecked(p.keepScreenOn);
         noiseBox.setChecked(p.noiseFilterEnabled);
@@ -431,33 +399,34 @@ public class SettingsActivity extends Activity {
         attentionBox.setChecked(p.attentionEnabled);
         autoStopBox.setText(String.valueOf(p.alarmAutoStopSec));
         cooldownBox.setText(String.valueOf(p.cooldownSec));
-        connWarnBox.setText(String.valueOf(p.connectionWarnSec));
         dySpinner.setSelection(Prefs.clamp(p.dyMode, 0, 3));
         dySecondsBox.setText(String.valueOf(p.dyEscalateSec));
     }
 
+    /** 测试官方流是否可达。只做一次握手，不建长连接。 */
     private void testConnection() {
         collect();
-        final Prefs snapshot = p;
         testResult.setTextColor(0xFF546E7A);
         testResult.setText("测试中…");
         new Thread(new Runnable() {
             public void run() {
-                final String msg;
+                // 不能写成 final 再在 try/catch 里各赋一次 —— Java 的
+                // "明确赋值"规则不允许（试过，编译报 might already have been
+                // assigned）。先算普通局部变量，再收进 final 给匿名类用。
+                String m;
+                boolean good;
                 try {
-                    msg = HaClient.testConnection(snapshot);
-                } catch (final HaClient.HaException e) {
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            testResult.setTextColor(0xFFC62828);
-                            testResult.setText(e.getMessage());
-                        }
-                    });
-                    return;
+                    m = F1Client.testConnectivity();
+                    good = true;
+                } catch (Throwable t) {
+                    m = t.getMessage() == null ? t.toString() : t.getMessage();
+                    good = false;
                 }
+                final String msg = m;
+                final boolean ok = good;
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        testResult.setTextColor(0xFF2E7D32);
+                        testResult.setTextColor(ok ? 0xFF2E7D32 : 0xFFC62828);
                         testResult.setText(msg);
                     }
                 });
