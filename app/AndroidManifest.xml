@@ -12,7 +12,7 @@
     踩过的坑：v2.0.0 期间连着重建了 4 次、每次都覆盖同一个 Release 资产，
     结果 4 个不同的 APK 全叫 2.0.0 —— 用户分不出自己装的是哪一个，
     先下载的人手里还是旧文件。tools/release.py 现在会拦住这种情况。
-    规则：versionCode 每次 +1，versionName 改 patch 位。
+    规则：versionCode 每次 +1，versionName 平时只动 patch 位，架构级改动给大版本号（v3.0.0 的 A 方案就是这一类：不再连 HA、不带令牌）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.haf1.racecontrol"
