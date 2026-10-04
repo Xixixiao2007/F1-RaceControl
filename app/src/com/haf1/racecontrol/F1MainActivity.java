@@ -1,6 +1,7 @@
 package com.haf1.racecontrol;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -60,6 +61,8 @@ public class F1MainActivity extends Activity {
     private LinearLayout iconStrip;
     private TextView statusView;
     private TextView filterToggle;
+    /** 状态行右端的「设置」入口。 */
+    private TextView settingsView;
     private ListView listView;
     private RowAdapter adapter;
 
@@ -72,6 +75,8 @@ public class F1MainActivity extends Activity {
             new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
 
     private boolean onlyImportant = true;
+    /** 用户是否在主界面手动切过「精简 / 全部」。切过就不再被设置页的默认值覆盖。 */
+    private boolean userToggledFilter = false;
     private long lastBeepAt = 0L;
     /** 刷新是否已经排进消息队列（去抖用：一批快照只刷一次）。 */
     private boolean refreshScheduled = false;
@@ -227,10 +232,30 @@ public class F1MainActivity extends Activity {
         filterToggle.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 onlyImportant = !onlyImportant;
+                // 用户在主界面手动切过之后，就别再被设置页里的默认值覆盖了
+                userToggledFilter = true;
                 refreshList();
             }
         });
         row.addView(filterToggle);
+
+        // ★ 设置入口。A 方案重写主界面时**漏掉了这个** —— 设置页的代码一直
+        //   都在（数据源 / 显示与过滤 / 提醒 / 试听 / 关于，v3.0.0 时已改成
+        //   A 方案版），但新主界面没有任何地方能打开它，用户点不到，
+        //   看起来就像"设置被删了"。
+        //   旧 MainActivity 是一直有的（右上角"设置"），照它补回来。
+        settingsView = new TextView(this);
+        settingsView.setText("设置");
+        settingsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        settingsView.setTextColor(0xFF00695C);
+        settingsView.setPadding(dp(12), dp(4), dp(2), dp(4));
+        settingsView.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                startActivity(new Intent(F1MainActivity.this, SettingsActivity.class));
+            }
+        });
+        row.addView(settingsView);
+
         refreshToggleText();
         return row;
     }
@@ -528,6 +553,11 @@ public class F1MainActivity extends Activity {
         super.onResume();
         prefs = Prefs.load(this);
         prefs.applyTo(gate);
+        // 从设置页回来时把「精简」默认值同步过来（用户没在主界面手动切过的话）。
+        // 否则改了设置回到主界面看不到变化，会以为设置没生效。
+        if (!userToggledFilter) {
+            onlyImportant = prefs.noiseFilterEnabled;
+        }
         applyKeepScreenOn();
         refreshList();
         refreshUi(false);
