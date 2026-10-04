@@ -73,6 +73,21 @@ public class F1MainActivity extends Activity {
 
     private boolean onlyImportant = true;
     private long lastBeepAt = 0L;
+    /** 连接阶段，直接显示在状态行里——用户看完能告诉我卡在哪。 */
+    private volatile String stage = "未启动";
+    private volatile boolean opened = false;
+    private volatile String lastErr = "";
+
+    /**
+     * 多旧的消息就不该再唤醒了。
+     *
+     * ★ 订阅时官方会推一份**历史全量快照**（巴林站 327 条）。不过滤的话，
+     *   开机瞬间就会弹 23 次全屏强提醒
+     *   （3 条红旗 + 1 条 VSC + 19 条双黄），
+     *   全是几小时前就结束的事。
+     *   实时比赛不受影响：实时消息就是几秒前的。
+     */
+    private static final long ALERT_MAX_AGE_MS = 3 * 60 * 1000L;
     private int lastCount = -1;
     private long startedAt = 0L;
 
@@ -115,6 +130,9 @@ public class F1MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         setContentView(root);
         refreshList();
+        // ★ 必须调：否则在收到任何回调之前，
+        //   状态行是**空白**的，用户看不到"连接中"。
+        updateStatus();
         refreshUi(true);
     }
 
@@ -233,6 +251,8 @@ public class F1MainActivity extends Activity {
     private void startClient() {
         client = new F1Client(new F1Client.Listener() {
             public void onOpen() {
+                opened = true;
+                stage = "已连上官方流，等数据…";
                 ui.post(new Runnable() {
                     public void run() {
                         startedAt = System.currentTimeMillis();
@@ -250,6 +270,8 @@ public class F1MainActivity extends Activity {
             }
 
             public void onError(final String message) {
+                lastErr = message == null ? "" : message;
+                stage = "连接出错，即将重试";
                 ui.post(new Runnable() {
                     public void run() {
                         updateStatus();
@@ -258,6 +280,10 @@ public class F1MainActivity extends Activity {
             }
 
             public void onClose() {
+                opened = false;
+                if (!stage.startsWith("连接出错")) {
+                    stage = "连接已断开，即将重试";
+                }
                 ui.post(new Runnable() {
                     public void run() {
                         updateStatus();
@@ -294,8 +320,15 @@ public class F1MainActivity extends Activity {
 
     /** 新消息：告警 + 列表 + 旗语栏。 */
     private void onNewMessage(RaceMessage m) {
-        AlertGate.Action a = gate.onMessage(m, System.currentTimeMillis());
-        runAction(a);
+        // ★ 只对**新鲜**消息告警。
+        //   订阅时推来的历史快照不能响：否则开机就被
+        //   23 次全屏强提醒活埋，而且全是几小时前的事。
+        long now = System.currentTimeMillis();
+        boolean fresh = m.time <= 0 || now - m.time <= ALERT_MAX_AGE_MS;
+        if (fresh) {
+            AlertGate.Action a = gate.onMessage(m, now);
+            runAction(a);
+        }
         if (prefs.flashEnabled) {
             startFlash(m.key());
         }
@@ -374,28 +407,37 @@ public class F1MainActivity extends Activity {
         if (statusView == null) {
             return;
         }
-        String conn;
-        if (client == null) {
-            conn = "未启动";
-        } else if (lastCount >= 0 && startedAt > 0
-                && System.currentTimeMillis() - startedAt < 3000) {
-            conn = "连接中";
-        } else {
-            conn = feed != null && feed.messages.size() > 0 ? "⏱ 实时" : "⏱ 连接中";
-        }
+        // ★ 状态行要能回答“卡在哪”。
+        //   之前只写"连接中"，用户看完也没法反馈；
+        //   现在写清楚：阶段 + 已收条数 + 最后一条错误。
         StringBuilder b = new StringBuilder();
-        b.append(conn);
-        if (feed != null) {
-            b.append("  ").append(feed.meetingName());
+        int n = feed == null ? 0 : feed.messages.size();
+        if (n > 0) {
+            b.append("⏱ 实时");
+        } else {
+            b.append("… ").append(stage);
+        }
+        if (feed != null && n > 0) {
+            if (feed.meetingName().length() > 0) {
+                b.append("  ").append(feed.meetingName());
+            }
             if (feed.sessionName().length() > 0) {
                 b.append(' ').append(feed.sessionName());
             }
-            b.append("  ").append(feed.messages.size()).append(" 条");
+            b.append("  ").append(n).append(" 条");
             int lap = feed.currentLap();
             if (lap > 0) {
                 b.append("  第 ").append(lap).append('/')
                         .append(feed.totalLaps()).append(" 圈");
             }
+        }
+        String e = lastErr;
+        if (e.length() == 0 && client != null) {
+            e = client.lastError();
+        }
+        if (e.length() > 0 && n == 0) {
+            b.append("  |  ").append(e.length() > 60
+                    ? e.substring(0, 60) + "…" : e);
         }
         statusView.setText(b.toString());
     }
@@ -501,7 +543,8 @@ public class F1MainActivity extends Activity {
                 time.setTextColor(0xCCFFFFFF);
                 badge = new TextView(F1MainActivity.this);
                 badge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-                badge.setPadding(dp(6), 0, 0, 0);
+                // 徽标有独立底色（见 getView），四边都要留白才像标签
+                badge.setPadding(dp(5), dp(1), dp(5), dp(1));
                 badge.setTextColor(Color.WHITE);
                 head.addView(time);
                 head.addView(badge);
@@ -532,10 +575,28 @@ public class F1MainActivity extends Activity {
             RaceMessage m = shown.get(pos);
             String kind = Classifier.kind(m);
             int bg = Classifier.color(kind);
-            if (flashing.contains(m.key())) {
+            boolean flash = flashing.contains(m.key());
+            if (flash) {
                 bg = Classifier.barColor(kind);
             }
             row.setBackgroundColor(bg);
+
+            // ★ 文字颜色必须跟着背景走。
+            //   Classifier.color() 给的是**极浅**的底色（红 FFFFCDD2、黄 FFFFF9C4、
+            //   灰 FFEEEEEE、白 FFFFFFFF…）。第一版这里把文字全写成白色，
+            //   结果是**白字白底，整列消息看起来是空的** —— 装上 App 后
+            //   "完全没东西"就是这个原因，不是没连上。
+            //   亮底用深字，闪动时底色换成 barColor（深色）才用白字。
+            int fgTime = flash ? 0xCCFFFFFF : 0xFF78909C;
+            int fgBody = flash ? Color.WHITE : 0xFF212121;
+            int fgSub = flash ? 0x99FFFFFF : 0xFF00695C;
+            time.setTextColor(fgTime);
+            badge.setTextColor(Color.WHITE);   // 徽标有独立底色，始终白字
+            body.setTextColor(fgBody);
+            orig.setTextColor(fgSub);
+            // 徽标给个实心底色，否则"白字 + 浅底"同样看不清
+            badge.setBackgroundColor(Classifier.barColor(kind));
+
             time.setText(fmt.format(new Date(m.time)));
             badge.setText(Classifier.label(kind));
 
