@@ -68,11 +68,11 @@ public class F1Feed {
         void onStatusChanged();
     }
 
-    public void setListener(Listener l) {
+    public synchronized void setListener(Listener l) {
         this.listener = l;
     }
 
-    public String lastError() {
+    public synchronized String lastError() {
         return lastError;
     }
 
@@ -81,7 +81,7 @@ public class F1Feed {
     // ------------------------------------------------------------------
 
     /** 处理一条已经解析好的 SignalR 记录；返回 true 表示状态有变化。 */
-    public boolean onRecord(JSONObject rec) {
+    public synchronized boolean onRecord(JSONObject rec) {
         if (rec == null) {
             return false;
         }
@@ -100,7 +100,7 @@ public class F1Feed {
     }
 
     /** type 3：整份快照，把每个流都过一遍。 */
-    public boolean onSnapshot(JSONObject result) {
+    public synchronized boolean onSnapshot(JSONObject result) {
         if (result == null) {
             return false;
         }
@@ -114,7 +114,7 @@ public class F1Feed {
     }
 
     /** type 1：单个流的增量。 */
-    public boolean onDelta(String stream, JSONObject payload) {
+    public synchronized boolean onDelta(String stream, JSONObject payload) {
         return apply(stream, payload);
     }
 
@@ -294,34 +294,34 @@ public class F1Feed {
     // 给界面用
     // ------------------------------------------------------------------
 
-    public JSONObject stream(String name) {
+    public synchronized JSONObject stream(String name) {
         return state.optJSONObject(name);
     }
 
     /** 官方轨道级状态码：1/8 全清 2 黄 4 安全车 5 红旗 6 VSC 7 VSC 结束。 */
-    public String trackStatusCode() {
+    public synchronized String trackStatusCode() {
         JSONObject ts = state.optJSONObject("TrackStatus");
         return ts == null ? "" : ts.optString("Status", "");
     }
 
-    public int currentLap() {
+    public synchronized int currentLap() {
         JSONObject lc = state.optJSONObject("LapCount");
         return lc == null ? 0 : lc.optInt("CurrentLap", 0);
     }
 
-    public int totalLaps() {
+    public synchronized int totalLaps() {
         JSONObject lc = state.optJSONObject("LapCount");
         return lc == null ? 0 : lc.optInt("TotalLaps", 0);
     }
 
     /** 例如 "Bahrain Grand Prix"。 */
-    public String meetingName() {
+    public synchronized String meetingName() {
         JSONObject si = state.optJSONObject("SessionInfo");
         JSONObject m = si == null ? null : si.optJSONObject("Meeting");
         return m == null ? "" : m.optString("Name", "");
     }
 
-    public String circuitName() {
+    public synchronized String circuitName() {
         JSONObject si = state.optJSONObject("SessionInfo");
         JSONObject m = si == null ? null : si.optJSONObject("Meeting");
         JSONObject c = m == null ? null : m.optJSONObject("Circuit");
@@ -329,12 +329,12 @@ public class F1Feed {
     }
 
     /** 环节名，例如 "Race" / "Qualifying" / "Practice 1"。 */
-    public String sessionName() {
+    public synchronized String sessionName() {
         JSONObject si = state.optJSONObject("SessionInfo");
         return si == null ? "" : si.optString("Name", "");
     }
 
-    public String sessionStatus() {
+    public synchronized String sessionStatus() {
         JSONObject si = state.optJSONObject("SessionInfo");
         String s = si == null ? "" : si.optString("SessionStatus", "");
         if (s.length() > 0) {
@@ -345,17 +345,17 @@ public class F1Feed {
     }
 
     /** 环节剩余时间，例如 "00:12:34"。 */
-    public String remaining() {
+    public synchronized String remaining() {
         JSONObject c = state.optJSONObject("ExtrapolatedClock");
         return c == null ? "" : c.optString("Remaining", "");
     }
 
-    public String airTemp() {
+    public synchronized String airTemp() {
         JSONObject w = state.optJSONObject("WeatherData");
         return w == null ? "" : w.optString("AirTemp", "");
     }
 
-    public String trackTemp() {
+    public synchronized String trackTemp() {
         JSONObject w = state.optJSONObject("WeatherData");
         return w == null ? "" : w.optString("TrackTemp", "");
     }
@@ -401,7 +401,7 @@ public class F1Feed {
      *
      * 用户要求「按 22 个位置预留、顺序按赛道位置」，所以这里排好给界面直接用。
      */
-    public List<Car> cars() {
+    public synchronized List<Car> cars() {
         Map<String, Car> map = new HashMap<String, Car>();
         JSONObject dl = state.optJSONObject("DriverList");
         if (dl != null) {
@@ -553,14 +553,14 @@ public class F1Feed {
      * 而区段号只会随消息出现，所以"出现过多少就是多少"最稳，
      * 也不用维护 24 站的表。返回 0 表示本场还没有过区段消息。
      */
-    public int sectorCount() {
+    public synchronized int sectorCount() {
         return maxSector;
     }
 
     /**
      * 前三名 + 圈速，一行一个人（TopThree 流；赛后才稳，比赛中途可能为空）。
      */
-    public java.util.List<String> topThree() {
+    public synchronized java.util.List<String> topThree() {
         java.util.List<String> out = new java.util.ArrayList<String>();
         JSONObject tt = state.optJSONObject("TopThree");
         JSONArray lines = tt == null ? null : tt.optJSONArray("Lines");
@@ -581,7 +581,7 @@ public class F1Feed {
     }
 
     /** 天气一行字：气温 / 赛道温 / 湿度 / 风 / 降雨。 */
-    public String weatherText() {
+    public synchronized String weatherText() {
         JSONObject w = state.optJSONObject("WeatherData");
         if (w == null) {
             return "";

@@ -38,14 +38,14 @@ public class TrackState {
     private final Map<Integer, Integer> sectors = new HashMap<Integer, Integer>();
     private long updatedAt = 0L;
 
-    public void reset() {
+    public synchronized void reset() {
         global = NONE;
         sectors.clear();
         updatedAt = 0L;
     }
 
     /** 喂一条消息进去，更新状态。 */
-    public void onMessage(RaceMessage m) {
+    public synchronized void onMessage(RaceMessage m) {
         if (m == null || m.isUnavailable()) {
             return;
         }
@@ -119,7 +119,7 @@ public class TrackState {
      *   1 / 8 = 全清     2 = 黄旗（全赛道）   4 = 安全车
      *   5 = 红旗         6 = VSC              7 = VSC 结束
      */
-    public void onTrackStatus(String code) {
+    public synchronized void onTrackStatus(String code) {
         if (code == null) {
             return;
         }
@@ -148,7 +148,7 @@ public class TrackState {
      * 注意这和 {@link #level()} 的区别：level() 只给「最高的那一个」，
      * 而顶部栏要的是**并存时全部列出**（比如红旗期间某区段还有双黄）。
      */
-    public List<String> presentKinds() {
+    public synchronized List<String> presentKinds() {
         List<String> out = new ArrayList<String>();
         if (global == RED) {
             out.add(Classifier.K_RED);
@@ -173,7 +173,7 @@ public class TrackState {
     }
 
     /** 某一类旗语当前涉及的区段；轨道级（红旗/安全车/VSC）返回空列表。 */
-    public List<Integer> sectorsOf(String kind) {
+    public synchronized List<Integer> sectorsOf(String kind) {
         if (Classifier.K_DY.equals(kind)) {
             return doubleYellowSectors();
         }
@@ -186,7 +186,7 @@ public class TrackState {
     }
 
     /** 当前应当显示的最高级别。 */
-    public int level() {
+    public synchronized int level() {
         int lvl = global;
         for (Integer v : sectors.values()) {
             if (v.intValue() > lvl) {
@@ -196,12 +196,12 @@ public class TrackState {
         return lvl;
     }
 
-    public int globalLevel() {
+    public synchronized int globalLevel() {
         return global;
     }
 
     /** 当前双黄的区段列表（已排序）。 */
-    public List<Integer> doubleYellowSectors() {
+    public synchronized List<Integer> doubleYellowSectors() {
         List<Integer> out = new ArrayList<Integer>();
         for (Map.Entry<Integer, Integer> e : sectors.entrySet()) {
             if (e.getValue().intValue() == DY) {
@@ -212,7 +212,7 @@ public class TrackState {
         return out;
     }
 
-    public List<Integer> yellowSectors() {
+    public synchronized List<Integer> yellowSectors() {
         List<Integer> out = new ArrayList<Integer>();
         for (Map.Entry<Integer, Integer> e : sectors.entrySet()) {
             if (e.getValue().intValue() == YELLOW) {
@@ -223,12 +223,12 @@ public class TrackState {
         return out;
     }
 
-    public long updatedAt() {
+    public synchronized long updatedAt() {
         return updatedAt;
     }
 
     /** 状态条的标题文字。 */
-    public String label() {
+    public synchronized String label() {
         int lvl = level();
         if (lvl == RED) {
             return "红旗";
@@ -261,7 +261,7 @@ public class TrackState {
      *     · 安全车 / VSC -> 全场（和双黄旗的「区段 12,13」形成对照：
      *       整条赛道 vs 某几个区段）
      */
-    public String detail() {
+    public synchronized String detail() {
         int lvl = level();
         if (lvl == NONE || lvl == GREEN) {
             return "赛道正常";
@@ -290,7 +290,7 @@ public class TrackState {
     }
 
     /** 状态条底色。 */
-    public int color() {
+    public synchronized int color() {
         int lvl = level();
         if (lvl == RED) {
             return 0xFFD32F2F;
@@ -314,7 +314,7 @@ public class TrackState {
     }
 
     /** 状态条上文字的颜色（浅底用深字）。 */
-    public int textColor() {
+    public synchronized int textColor() {
         int lvl = level();
         if (lvl == DY || lvl == YELLOW || lvl == VSC) {
             return 0xFF212121;

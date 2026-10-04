@@ -73,6 +73,9 @@ public class F1MainActivity extends Activity {
 
     private boolean onlyImportant = true;
     private long lastBeepAt = 0L;
+    /** 刷新是否已经排进消息队列（去抖用：一批快照只刷一次）。 */
+    private boolean refreshScheduled = false;
+
     /** 连接阶段，直接显示在状态行里——用户看完能告诉我卡在哪。 */
     private volatile String stage = "未启动";
     private volatile boolean opened = false;
@@ -101,9 +104,38 @@ public class F1MainActivity extends Activity {
         notifier = new Notifier(this);
         onlyImportant = prefs.noiseFilterEnabled;
 
+        // ★ 装崩溃兜底：手机上闪退时用户什么也看不到，
+        //   把栈落盘、下次启动弹出来，他截图发我即可。
+        CrashGuard.install(this);
+
         buildLayout();
         startClient();
         ui.post(tickTask);
+
+        String crash = CrashGuard.take(this);
+        if (crash.length() > 0) {
+            showCrash(crash);
+        }
+    }
+
+    /** 把上一次的崩溃栈显示出来（可滚动）。用户截图就能发过来。 */
+    private void showCrash(String text) {
+        try {
+            android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            android.widget.TextView tv = new android.widget.TextView(this);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
+            tv.setTextIsSelectable(true);
+            tv.setPadding(dp(10), dp(10), dp(10), dp(10));
+            tv.setText("上次运行崩了。请把下面内容截图发给我：\n\n" + text);
+            sv.addView(tv);
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("崩溃日志（" + text.length() + " 字符）")
+                    .setView(sv)
+                    .setPositiveButton("知道了", null)
+                    .show();
+        } catch (Throwable ignored) {
+            // 弹不出来也不能再崩一次
+        }
     }
 
     /**
@@ -304,7 +336,7 @@ public class F1MainActivity extends Activity {
             public void onStatusChanged() {
                 ui.post(new Runnable() {
                     public void run() {
-                        refreshUi(false);
+                        scheduleRefresh();
                     }
                 });
             }
@@ -332,7 +364,27 @@ public class F1MainActivity extends Activity {
         if (prefs.flashEnabled) {
             startFlash(m.key());
         }
-        refreshUi(false);
+        scheduleRefresh();
+    }
+
+    /**
+     * 合并成一次刷新。
+     *
+     * 客户端线程推快照时会**逐条**回调（巴林站 327 次），每次都全表过滤
+     * 等于跑 327 遍 O(n^2)。合并之后一批只刷一次，顺带缩短了与后台线程
+     * 重叠的窗口。
+     */
+    private void scheduleRefresh() {
+        if (refreshScheduled) {
+            return;
+        }
+        refreshScheduled = true;
+        ui.post(new Runnable() {
+            public void run() {
+                refreshScheduled = false;
+                refreshUi(true);
+            }
+        });
     }
 
     private void runAction(AlertGate.Action a) {

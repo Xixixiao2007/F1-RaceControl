@@ -23,7 +23,7 @@ public class MessageStore {
     private long newestTime = 0L;
 
     /** 加入一条；返回 true 表示这条是新的（用于决定要不要闪动/提醒）。 */
-    public boolean add(RaceMessage m) {
+    public synchronized boolean add(RaceMessage m) {
         if (m == null || m.isUnavailable()) {
             return false;
         }
@@ -36,25 +36,25 @@ public class MessageStore {
         return isNew;
     }
 
-    public boolean contains(String key) {
+    public synchronized boolean contains(String key) {
         return map.containsKey(key);
     }
 
-    public int size() {
+    public synchronized int size() {
         return map.size();
     }
 
-    public long newestTime() {
+    public synchronized long newestTime() {
         return newestTime;
     }
 
-    public void clear() {
+    public synchronized void clear() {
         map.clear();
         newestTime = 0L;
     }
 
     /** 按时间倒序（最新在最上）。 */
-    public List<RaceMessage> sortedDesc() {
+    public synchronized List<RaceMessage> sortedDesc() {
         List<RaceMessage> tmp = new ArrayList<RaceMessage>(map.values());
         Collections.sort(tmp, new Comparator<RaceMessage>() {
             public int compare(RaceMessage a, RaceMessage b) {
@@ -68,7 +68,7 @@ public class MessageStore {
     }
 
     /** 丢掉早于 cutoff 的记录。 */
-    public void dropOlderThan(long cutoff) {
+    public synchronized void dropOlderThan(long cutoff) {
         Iterator<Map.Entry<String, RaceMessage>> it = map.entrySet().iterator();
         while (it.hasNext()) {
             if (it.next().getValue().time < cutoff) {
@@ -78,7 +78,7 @@ public class MessageStore {
     }
 
     /** 容量上限，超出时丢掉最旧的。 */
-    public void trimTo(int max) {
+    public synchronized void trimTo(int max) {
         if (max <= 0 || map.size() <= max) {
             return;
         }
@@ -98,7 +98,7 @@ public class MessageStore {
     // 落盘
     // ------------------------------------------------------------------
 
-    public String serialize() {
+    public synchronized String serialize() {
         StringBuilder sb = new StringBuilder();
         List<RaceMessage> asc = sortedDesc();
         // 反着写，读回来时插入顺序就是时间正序，便于渐进显示
@@ -120,7 +120,7 @@ public class MessageStore {
         return sb.toString();
     }
 
-    public void load(String blob) {
+    public synchronized void load(String blob) {
         map.clear();
         newestTime = 0L;
         if (blob == null || blob.length() == 0) {
