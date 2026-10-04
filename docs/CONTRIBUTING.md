@@ -10,7 +10,7 @@
 
 ```bash
 python tools/fetch_sdk.py              # 首次：下载最小 Android 工具集（约 236 MB）
-python tools/run_tests.py              # 桌面单测（153 项）
+python tools/run_tests.py              # 桌面单测（312 项）
 python tools/build_apk.py              # 构建 APK
 python tools/run_all_tests.py          # 全套测试（单元 + mock 自测 + 端到端 + 发布工具），共 7 项
 python tools/try_feel.py               # 真机手感测试台：按键就往手机推一段剧本
@@ -24,9 +24,30 @@ python tools/release.py --publish --notes <说明.md>    # 检查通过后一路
 python tools/release.py --push-only                   # 发完版又补了文档：只推引用，不重发
 ```
 
-**发版前必须改 `app/AndroidManifest.xml` 的 `versionCode`（每次 +1）和
-`versionName`（patch 位）。** 不改的话 `release.py` 会直接拒绝 —— 有两道闸：
+**发版前必须改 `app/AndroidManifest.xml` 的 `versionCode`（每次 +1）。
+`versionName` 平时只动 patch 位；架构级改动给大版本号**
+（`v3.0.0` 的 A 方案就是这一类：不再连 HA、不带令牌）。
+
+不改 versionCode 的话 `release.py` 会直接拒绝 —— 有两道闸：
 本地（源码变了但 versionCode 没变）、远端（该版本号已发布过、资产内容又不同）。
+
+### 发版约定
+
+- **可以直接发布，不必逐次确认。** 构建通过 + 两道闸门通过就发。
+- **Release 只留最新的一个**：发布后删掉旧的 Release（用 `tools/gh_releases.py --prune`），
+  但**tag 一律保留** —— tag 是历史坐标，删了就找不回来了。
+- **绝不重复上传同一个版本号的 APK**。APK 不是逐字节可复现的，
+  重传会让先下载的人手里留下旧文件而 Release 说明里的 SHA256 当场作废。
+- **文档跟同一次推送一起更新**：`CHANGELOG.md`、`README.md`、`docs/USAGE.md`，
+  以及本文档末尾的 **目录**（新增/删除源文件时必须同步）。
+- **代理先确认**：这个环境的 GitHub 走 `127.0.0.1:7892`。代理不通就先说，
+  不要绕路。
+
+> **构建产物不要写进 Synology 同步盘。** 实测把 APK 输出到同步目录里，
+> 同步进程会在写入过程中锁文件，产出过一个 74.8 KB 的残缺包（正常 84.7 KB），
+> 并且让 `apksigner verify` 空转 20 分钟。构建时用
+> `--out` 指到同步盘之外（如 `%TEMP%`），再拷回来。
+
 
 补文档用 `--push-only`。**别在这种情况下再跑 `--publish`**：APK 不是逐字节
 可复现的，它会重建重传，Release 说明里写死的 SHA256 当场作废。
