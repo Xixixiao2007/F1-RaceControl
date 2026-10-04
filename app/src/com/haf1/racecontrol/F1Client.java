@@ -17,7 +17,10 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.security.SecureRandom;
+import java.util.List;
+import java.util.Map;
 
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
@@ -82,6 +85,8 @@ public class F1Client {
 
     private volatile boolean closed = false;
     private volatile Socket socket;
+    /** negotiate 返回的亲和性 Cookie（AWSALB / AWSALBTG 等）。握手时要带上。 */
+    private String affinityCookies = "";
     private InputStream in;
     private OutputStream out;
     private String lastError = "";
@@ -161,10 +166,28 @@ public class F1Client {
             throw new IOException("negotiate 没有返回 connectionToken");
         }
 
-        Socket s = SSLSocketFactory.getDefault().createSocket();
-        s.connect(new InetSocketAddress(HOST, 443), CONNECT_TIMEOUT_MS);
-        s.setSoTimeout(READ_TIMEOUT_MS);
-        s.setTcpNoDelay(true);
+        // ★ Android 上必须用「带主机名」的重载来建 SSLSocket，否则**不发 SNI**。
+        //
+        //   原来的写法是 createSocket()（无参）+ connect()。在桌面 JSSE 上这样
+        //   能发 SNI，所以测试全绿；但在 Android 上不保证，而
+        //   livetiming.formula1.com 走 CloudFront —— 没有 SNI 时 TLS 可能照样
+        //   握手成功（拿到默认证书），请求却被路由到错误的站点，HTTP 层返回 4xx。
+        //
+        //   症状正是用户遇到的那个组合：**negotiate 成功、握手失败**。
+        //   因为 negotiate 走 HttpURLConnection，它自己会发 SNI。
+        //
+        //   先建一条普通 TCP（这样才设得上连接超时），再包成带主机名的 SSLSocket。
+        Socket plain = new Socket();
+        plain.connect(new InetSocketAddress(HOST, 443), CONNECT_TIMEOUT_MS);
+        plain.setSoTimeout(READ_TIMEOUT_MS);
+        plain.setTcpNoDelay(true);
+        // getDefault() 的**声明返回类型**是 javax.net.SocketFactory，
+        // 在它上面看不到 SSLSocketFactory 的那个带主机名的重载，必须先转类型。
+        // （变量不能叫 f —— 下面读帧那段的 `WsFrame f` 已经占了。）
+        SSLSocketFactory sslFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket ssl = (SSLSocket) sslFactory.createSocket(plain, HOST, 443, true);
+        ssl.startHandshake();          // 显式握手：失败早点冒出来，错误也更清楚
+        Socket s = ssl;
         socket = s;
         in = new BufferedInputStream(s.getInputStream());
         out = new BufferedOutputStream(s.getOutputStream());
@@ -303,6 +326,38 @@ public class F1Client {
             if (code != 200) {
                 throw new IOException("negotiate HTTP " + code);
             }
+            // ★ 把 Set-Cookie 里的 name=value 收下来。
+            //   负载均衡的亲和性 cookie：不带的话，
+            //   WebSocket 升级可能落到另一个后端，
+            //   那边认不出这个一次性令牌 -> 4xx。
+            StringBuilder ck = new StringBuilder();
+            Map<String, List<String>> hdrs = c.getHeaderFields();
+            for (Map.Entry<String, List<String>> en : hdrs.entrySet()) {
+                if (en.getKey() == null
+                        || !"set-cookie".equalsIgnoreCase(en.getKey())) {
+                    continue;
+                }
+                List<String> vs = en.getValue();
+                if (vs == null) {
+                    continue;
+                }
+                for (int i = 0; i < vs.size(); i++) {
+                    String v = vs.get(i);
+                    if (v == null) {
+                        continue;
+                    }
+                    int semi = v.indexOf(';');
+                    String pair = (semi > 0 ? v.substring(0, semi) : v).trim();
+                    if (pair.length() == 0) {
+                        continue;
+                    }
+                    if (ck.length() > 0) {
+                        ck.append("; ");
+                    }
+                    ck.append(pair);
+                }
+            }
+            affinityCookies = ck.toString();
             InputStream is = c.getInputStream();
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             byte[] buf = new byte[4096];
@@ -354,12 +409,17 @@ public class F1Client {
         String key = Base64.encodeToString(nonce, Base64.NO_WRAP);
 
         String path = WS_PATH + "?id=" + URLEncoder.encode(token, "UTF-8");
+        // Origin 不是必须的（实测任何 Origin 甚至不带都能 101），但真实客户端
+        // 都会带，带上更不容易被边缘节点当成异常流量。
         String req = "GET " + path + " HTTP/1.1\r\n"
                 + "Host: " + HOST + "\r\n"
                 + "Upgrade: websocket\r\n"
                 + "Connection: Upgrade\r\n"
                 + "Sec-WebSocket-Key: " + key + "\r\n"
                 + "Sec-WebSocket-Version: 13\r\n"
+                + "Origin: https://www.formula1.com\r\n"
+                + (affinityCookies.length() > 0
+                        ? "Cookie: " + affinityCookies + "\r\n" : "")
                 + "User-Agent: HA-F1-RaceControl\r\n"
                 + "\r\n";
         out.write(req.getBytes("UTF-8"));
@@ -367,9 +427,14 @@ public class F1Client {
 
         String head = readHttpHead();
         if (head == null || head.indexOf("101") < 0) {
-            String first = head == null ? "(无响应)"
-                    : head.split("\r\n")[0];
-            throw new IOException("WebSocket 握手失败：" + first);
+            // 把**完整响应头**带上。原来只留第一行，信息不够 ——
+            // 真出问题时看不到 Server / x-amz-cf-id 这类线索，只能靠猜。
+            String detail = head == null ? "(没有响应)"
+                    : head.replace("\r\n", "  ").trim();
+            if (detail.length() > 220) {
+                detail = detail.substring(0, 220) + "…";
+            }
+            throw new IOException("WebSocket 握手失败：" + detail);
         }
     }
 

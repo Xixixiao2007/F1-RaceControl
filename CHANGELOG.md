@@ -1,5 +1,52 @@
 # 更新日志
 
+## v3.0.2
+
+versionCode 16 -> 17。
+
+### 修：Android 上「WebSocket 握手失败」
+
+用户装上 v3.0.1 后，状态行显示「握手失败」。**这句话本身就给出了关键线索**：
+negotiate 肯定是成功的（否则报的会是 `negotiate HTTP xxx`）—— 也就是说 TLS 通了、
+一次性令牌也拿到了，**只有 WebSocket 升级被服务端拒了**。
+
+顺着这条线索改了三处：
+
+**1. SNI（服务器名称指示）。** 原来这样建连接：
+
+```java
+Socket s = SSLSocketFactory.getDefault().createSocket();   // 不带主机名
+s.connect(new InetSocketAddress(HOST, 443), ...);
+```
+
+桌面 JSSE 在这种写法下会发 SNI，所以**所有测试都是绿的**；但 **Android 不保证**。
+而 `livetiming.formula1.com` 走 CloudFront —— 没有 SNI 时 TLS 可能照样握手成功
+（拿到默认证书），请求却被路由到错误的站点，于是 HTTP 层返回 4xx。
+
+改成带主机名的重载，它才会发 SNI 并做主机名校验：
+
+```java
+SSLSocketFactory.createSocket(Socket, String host, int port, boolean autoClose)
+```
+
+**这也是为什么 negotiate 一直正常**：那一步走 `HttpURLConnection`，它自己会发 SNI。
+
+**2. 负载均衡的亲和性 Cookie。** `negotiate` 的响应里有 `AWSALB` / `AWSALBTG`
+这类 cookie。之前测过「不带也能 101」—— 但那是在**桌面**上测的，很可能正好命中
+同一个后端节点。手机在另一个边缘节点上，negotiate 与 WebSocket 升级落到不同后端
+时，那边认不出这个一次性令牌。现在会把 cookie 带回握手请求（这是真实客户端的做法）。
+
+**3. 握手失败的错误信息带上完整响应头。** 原来只留第一行，信息不够用。
+万一上面两条都不是根因，下次能直接看到服务端返回的 HTTP 状态和响应头，
+不用再猜。
+
+### 说明
+
+这一版的修复**没能在真机上验证**（手上没有 Android 设备）。两项改动在桌面端都实测
+仍然正常 —— 真连官方流拿到整场数据（327 条消息 / 22 位车手 / 轮胎进站正确）。
+
+如果还失败，请把状态行上的原文发回来：它会显示服务端到底返回了什么。
+
 ## v3.0.1
 
 versionCode 15 -> 16。
