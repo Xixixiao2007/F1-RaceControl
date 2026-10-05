@@ -390,17 +390,18 @@ python tools/run_all_tests.py
 
 ```
 包名    com.haf1.racecontrol
-版本    versionCode 20 / versionName 3.1.0
+版本    versionCode 21 / versionName 3.1.1
 minSdk  23（Android 6.0）
 签名    v1 + v2 双方案
 大小    844.9 KB（865,224 字节，其中 751 KB 是两个回放包）
-SHA256  7aa0e84d7aaf1b00608095b3b4aba1314a461789c6cc001c359c73ac476d9b3d
+SHA256  8cb78f3b6129669631f01d91b946241a95dc27fbe6bd0e54c413e1e20e3ee7b8
 ```
 
-> 上面这个 SHA256 是 **v3.1.0 这个已发布资产**的值 —— 发布出去的资产不会再变，
+> 上面这个 SHA256 是 **v3.1.1 这个已发布资产**的值 —— 发布出去的资产不会再变，
 > 所以它是可核对的。但**不要**指望重新构建同一个版本能得到同一个哈希：
-> 构建不是逐字节可复现的，所以每版的哈希只能从
-> [Releases](../../releases) 页面（或 `tools/release.py` 的输出）拿。
+> 构建不是逐字节可复现的（签名带时间戳，光这一项就不一样），
+> 所以每版的哈希只能从 [Releases](../../releases) 页面
+> （或 `tools/release.py` 的输出）拿。
 >
 > 每一版都换新文件名、新版本号，**同一个版本号只会有一个 APK**。
 > `tools/release.py` 有两道闸：改了源码不升版本号 -> 拒绝；
