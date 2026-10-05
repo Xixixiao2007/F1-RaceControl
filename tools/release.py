@@ -791,6 +791,26 @@ def main():
         print("     上传 %s (%d 字节, %s)" % (ename, len(edata), esha[:16]))
         verify_asset(token, eres, esha, edata)
 
+    # ---- 正文补一份「本次产物」清单 ----
+    # ★ 为什么要有：SHA256 只打在控制台上，而用户是在手机上核对下载的，
+    #   他看不到控制台。写进正文，Release 页面自己就能完成核对。
+    rows = ["| 文件 | 大小 | SHA256 |", "| --- | --- | --- |",
+            "| `%s` | %d 字节（%.1f KB） | `%s` |"
+            % (os.path.basename(apk), os.path.getsize(apk),
+               os.path.getsize(apk) / 1024.0, apk_sha)]
+    for extra in (args.asset or []):
+        edata = open(extra, "rb").read()
+        rows.append("| `%s` | %d 字节（%.1f KB） | `%s` |"
+                    % (os.path.basename(extra), len(edata), len(edata) / 1024.0,
+                       hashlib.sha256(edata).hexdigest()))
+    table = "\n".join(rows)
+    body2 = (body.rstrip() + "\n\n---\n\n## 本次产物\n\n" + table
+             + "\n\n> 手机上核对：`certutil -hashfile <文件> SHA256`（Windows）"
+               "或任意哈希工具。\n")
+    st, _ = gh_call(token, "PATCH", "/repos/%s/releases/%d" % (REPO, rel["id"]),
+                    body={"body": body2})
+    print("     正文补了产物清单（%s）" % ("HTTP %s" % st))
+
     with open(STATE, "w", encoding="utf-8") as f:
         json.dump({"versionCode": code, "versionName": name, "sourceHash": src_hash,
                    "apkSha256": apk_sha, "tag": tag,
