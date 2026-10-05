@@ -373,7 +373,7 @@ public class F1Client implements FeedSource {
             c.setRequestMethod("POST");
             c.setConnectTimeout(CONNECT_TIMEOUT_MS);
             c.setReadTimeout(CONNECT_TIMEOUT_MS);
-            c.setRequestProperty("User-Agent", "HA-F1-RaceControl");
+            c.setRequestProperty("User-Agent", "F1-RaceControl");
             c.setDoOutput(true);
             c.setFixedLengthStreamingMode(0);
             c.getOutputStream().close();
@@ -475,7 +475,7 @@ public class F1Client implements FeedSource {
                 + "Origin: https://www.formula1.com\r\n"
                 + (affinityCookies.length() > 0
                         ? "Cookie: " + affinityCookies + "\r\n" : "")
-                + "User-Agent: HA-F1-RaceControl\r\n"
+                + "User-Agent: F1-RaceControl\r\n"
                 + "\r\n";
         out.write(req.getBytes("UTF-8"));
         out.flush();

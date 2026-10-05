@@ -1,4 +1,4 @@
-# HA-F1-RaceControl
+# F1-RaceControl
 
 把 **F1 官方公开的赛事控制数据**做成 Android 手机上的实时仪表。
 

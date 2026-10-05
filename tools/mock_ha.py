@@ -78,7 +78,7 @@ def _find_data():
     """找一个可用的真实数据 TSV。
 
     这个脚本有两种存在形态，数据也跟着放两个地方：
-      - 在 HA-F1-RaceControl 仓库里：tools/mock_data/racecontrol_history.tsv
+      - 在 F1-RaceControl 仓库里：tools/mock_data/racecontrol_history.tsv
       - 在开发工作区里：dsh/files/data/racecontrol_history.tsv
     两边都试，谁先存在用谁；都没有就返回第一个候选，让调用方去报错。
     """

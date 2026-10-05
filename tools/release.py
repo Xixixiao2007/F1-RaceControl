@@ -54,7 +54,7 @@ for _s in (sys.stdout, sys.stderr):
 
 import build_apk  # noqa: E402  复用 JDK/SDK 探测
 
-REPO = "Xixixiao2007/HA-F1-RaceControl"
+REPO = "Xixixiao2007/F1-RaceControl"
 STATE = os.path.join(HERE, ".release-state.json")
 DIST = os.path.dirname(ROOT)          # APK 放到仓库的上一级（跟以前一致）
 
@@ -657,7 +657,7 @@ def push_only(args, tag, code):
         else:
             sh(["git", "tag", "-d", tag], cwd=ROOT, check=False)
             sh(["git", "tag", "-a", tag, "-m",
-                "HA-F1-RaceControl %s\n\nversionCode %d。详见 CHANGELOG.md。"
+                "F1-RaceControl %s\n\nversionCode %d。详见 CHANGELOG.md。"
                 % (tag, code)], cwd=ROOT)
             refs.append("refs/tags/" + tag)
 
@@ -687,7 +687,7 @@ def main():
 
     code, name = read_version()
     tag = "v" + name
-    apk = os.path.join(DIST, "HA-F1-RaceControl-%s.apk" % tag)
+    apk = os.path.join(DIST, "F1-RaceControl-%s.apk" % tag)
 
     print("=" * 70)
     print("  版本 : versionCode=%d  versionName=%s   tag=%s" % (code, name, tag))
@@ -733,7 +733,7 @@ def main():
     print("  打标签 %s 并推送 main ..." % tag)
     sh(["git", "tag", "-d", tag], cwd=ROOT, check=False)
     sh(["git", "tag", "-a", tag, "-m",
-        "HA-F1-RaceControl %s\n\nversionCode %d。详见 CHANGELOG.md。" % (tag, code)],
+        "F1-RaceControl %s\n\nversionCode %d。详见 CHANGELOG.md。" % (tag, code)],
        cwd=ROOT)
     if not git_push(token, ["main", "refs/tags/" + tag]):
         push_via_api(token, tag)

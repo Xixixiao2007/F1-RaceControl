@@ -291,7 +291,7 @@ public class MainActivity extends Activity {
             titleView.setText("未配置");
             titleView.setTextColor(COLOR_BAR_TEXT);
             settingsView.setTextColor(COLOR_BAR_TEXT);
-            titleDetailView.setText("HA-F1-RaceControl");
+            titleDetailView.setText("F1-RaceControl");
             titleDetailView.setTextColor(COLOR_BAR_SUB);
             setStatus("请点右上角「设置」填写地址、令牌和实体名", false);
             if (!autoOpenedSettings) {

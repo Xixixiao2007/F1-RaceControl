@@ -116,7 +116,7 @@ RS = "\x1e"
 LINE_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})(.*)$")
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-UA = {"User-Agent": "HA-F1-RaceControl"}
+UA = {"User-Agent": "F1-RaceControl"}
 
 
 # 归档不会变，缓存到本地 —— 重建一次要拉 30 MB。不进版本库（见 .gitignore）。

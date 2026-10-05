@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  HA-F1-RaceControl —— F1 赛事控制消息专用显示 App。
+  F1-RaceControl —— F1 赛事控制消息专用显示 App。
 
   包名与上一代 Android_HA_Viewer（com.haf1.entitylist）**故意不同**：
   两个 App 要能同时装在一台手机上，共用同一台 HA 的令牌但互不覆盖。

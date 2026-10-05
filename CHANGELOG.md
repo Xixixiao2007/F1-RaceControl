@@ -1,5 +1,25 @@
 # 更新日志
 
+## 仓库改名：HA-F1-RaceControl -> F1-RaceControl（2026-10-05）
+
+改的是 GitHub 仓库名，**不是版本**，所以没有新版本号、没有新 Release。
+
+留 `HA-` 已经没道理了：v3.0.0 的 A 方案把 Home Assistant 整条链都去掉了，
+App 直连 F1 官方公开流，既不连 HA 也不需要令牌。名字里的 HA 是历史遗留。
+
+同步改掉的地方：
+
+- 仓库名与本地 `git remote`；
+- 文档标题（README / USAGE）、Release 链接；
+- `tools/release.py` 的 `REPO` 常量 —— 以及**产物名前缀**：
+  以后发布是 `F1-RaceControl-<tag>.apk`（已经发出去的
+  `HA-F1-RaceControl-v3.2.0.apk` **不会重传**，它就在那儿了）；
+- App 发给官方流的 `User-Agent`（`HA-F1-RaceControl` -> `F1-RaceControl`）。
+
+> 旧地址不会断：GitHub 对改名后的仓库保留重定向，
+> 实测 `api.github.com/repos/.../HA-F1-RaceControl` 返回 301，
+> 走新地址匿名下载 v3.2.0 的 APK，SHA256 与发布时完全一致。
+
 ## v3.2.0
 
 versionCode 21 -> 22。

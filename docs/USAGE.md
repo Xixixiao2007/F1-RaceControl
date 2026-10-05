@@ -1,6 +1,6 @@
-# HA-F1-RaceControl —— 使用说明
+# F1-RaceControl —— 使用说明
 
-**交付物**：`HA-F1-RaceControl-v3.2.0.apk`（92.7 KB，versionCode 22 / versionName 3.2.0，
+**交付物**：`F1-RaceControl-v3.2.0.apk`（92.7 KB，versionCode 22 / versionName 3.2.0，
 minSdk 23 / targetSdk 23，Android 6.0 及以上）
 
 桌面上显示的名字是 **F1 Race Control**。
@@ -36,7 +36,7 @@ App 直接连 F1 官方的公开计时服务，打开就能用。
 
 ## 二、装 App
 
-1. 从 [Releases](../../releases) 下载 `HA-F1-RaceControl-v3.0.1.apk`
+1. 从 [Releases](../../releases) 下载 `F1-RaceControl-v3.2.0.apk`
 2. 拷到手机（数据线 / 网盘 / `adb install` 都行）
 3. 手机上打开这个文件，系统会问「是否允许安装未知来源应用」，允许后安装
 
