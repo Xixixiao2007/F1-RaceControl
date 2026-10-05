@@ -8,8 +8,10 @@
 *.keystore binary
 *.idsig binary
 
-# 回放包：机器生成、要按字节核对哈希，绝不能碰换行。
-# .pack.gz 本来就是 gzip；.pack 虽然行结构是文本，
-# 但它是构建输入，改一个字节就和生成器对不上了。
+# 回放文件：机器生成、要按字节核对哈希，绝不能碰换行。
+# 它是 gzip，含 NUL，理论上 text=auto 自己也能认出是二进制 ——
+# 但这是构建输入 + 发布资产，不能靠启发式，明确标死。
+# .pack / .pack.gz 是 v3.1.x 的老格式，行留着以防以后还要读老文件。
+*.rclog binary
 *.pack binary
 *.pack.gz binary

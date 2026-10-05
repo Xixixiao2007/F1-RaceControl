@@ -101,12 +101,24 @@ public class Prefs {
     public int maxStored = 500;
 
     /**
-     * 回放包 id。空 = 连官方流（正常模式）。
+     * 回放文件的位置（content:// 或 file:// 的字符串）。空 = 连官方流（正常模式）。
      *
-     * 用官方归档压成的「回放包」当数据源，不需要比赛、不需要网络。
+     * ★ v3.2.0 起回放数据**不再打进 APK**，改成用户在设置页挑一个
+     * {@code .rclog} 文件。App 保存的是这个 URI，不是文件路径 ——
+     * 因为 Android 的存储访问框架（SAF）给的就是 URI，
+     * 而且它能让 App 读到「下载目录」里的文件**而不用申请任何存储权限**。
+     *
      * 见 {@link ReplayClient} 与 tools/build_replay_pack.py。
      */
-    public String replayPack = "";
+    public String replayUri = "";
+
+    /**
+     * 回放文件显示名。**只为了显示** —— 真名在 URI 里，但那是个乱码串。
+     *
+     * 存下来是为了主界面状态栏能直接写出"在放哪个文件"，不用为了显示一个名字
+     * 去重新打开文件（那可能要读网盘，还是别在主线程干）。
+     */
+    public String replayName = "";
 
     /** 回放倍速。整场 4 小时，60 倍速就是 4 分钟。 */
     public int replaySpeed = 60;
@@ -145,7 +157,8 @@ public class Prefs {
 
         p.connectionWarnSec = clamp(sp.getInt("connwarn", 45), 10, 600);
         p.maxStored = clamp(sp.getInt("maxstored", 500), 50, 5000);
-        p.replayPack = sp.getString("replay_pack", "");
+        p.replayUri = sp.getString("replay_uri", "");
+        p.replayName = sp.getString("replay_name", "");
         p.replaySpeed = clamp(sp.getInt("replay_speed", 60), 1, 600);
         return p;
     }
@@ -178,7 +191,8 @@ public class Prefs {
                 .putString("exclude", joinLines(excludeKeywords))
                 .putInt("connwarn", connectionWarnSec)
                 .putInt("maxstored", maxStored)
-                .putString("replay_pack", replayPack == null ? "" : replayPack)
+                .putString("replay_uri", replayUri == null ? "" : replayUri)
+                .putString("replay_name", replayName == null ? "" : replayName)
                 .putInt("replay_speed", clamp(replaySpeed, 1, 600))
                 .apply();
     }

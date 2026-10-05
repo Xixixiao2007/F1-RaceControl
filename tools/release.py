@@ -248,10 +248,16 @@ def source_hash():
 
     只算真正打进 APK 的东西（源码 / 清单 / 资源），不算测试和工具脚本 ——
     改测试不该逼你升版本号。
+
+    ★ app/assets 也算：它是打进 APK 的。以前这里漏了它，
+      "只换内置数据、不升版本号"就绕过了闸 1 —— v3.1.x 正好有一批
+      示例数据放在那儿，是个真洞。v3.2.0 起 assets 空着，但洞得堵上。
     """
     h = hashlib.sha256()
     targets = []
-    for base in (os.path.join(ROOT, "app", "src"), os.path.join(ROOT, "app", "res")):
+    for base in (os.path.join(ROOT, "app", "src"),
+                 os.path.join(ROOT, "app", "res"),
+                 os.path.join(ROOT, "app", "assets")):
         for dirpath, _dirs, files in os.walk(base):
             for f in files:
                 targets.append(os.path.join(dirpath, f))
@@ -327,7 +333,16 @@ def gate_remote(token, name, apk_sha):
     if not assets:
         print("  闸 2（远端）：v%s 已存在但没有资产，通过" % name)
         return
-    a = assets[0]
+    # ★ 必须挑 .apk 那个 —— Release 上还可能挂着示例 .rclog 之类，
+    #   拿 assets[0] 去比 APK 的哈希，等于随机挑一个资产来比。
+    a = None
+    for cand in assets:
+        if cand.get("name", "").endswith(".apk"):
+            a = cand
+            break
+    if a is None:
+        print("  闸 2（远端）：v%s 有资产但没有 .apk，通过" % name)
+        return
     print("  闸 2（远端）：v%s 已发布，资产 %s（%d 字节），下载比对 ..."
           % (name, a["name"], a["size"]))
     try:
@@ -659,6 +674,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--publish", action="store_true", help="检查通过后真的发布")
     ap.add_argument("--notes", default="", help="Release 说明 markdown 路径")
+    ap.add_argument("--asset", action="append", default=[],
+                    help="额外挂到 Release 上的文件（可重复）。例如示例 .rclog")
     ap.add_argument("--force", action="store_true",
                     help="跳过闸门（只在你明确知道自己在干什么时用）")
     ap.add_argument("--push-only", action="store_true",
@@ -754,6 +771,25 @@ def main():
 
     # ---- 复验（匿名下载 / 服务端 digest / API 端点，见 verify_asset 说明）----
     verify_asset(token, res, apk_sha, data)
+
+    # ---- 额外资产（示例回放文件等）----
+    # ★ 为什么挂在 Release 上而不是打进 APK：v3.1.x 把两个示例包塞进 APK，
+    #   体积从 85 KB 涨到 845 KB，其中 751 KB 全是示例数据。
+    #   挂在 Release 上，想要的人下一下，不想要的人不用白下 750 KB。
+    for extra in (args.asset or []):
+        if not os.path.isfile(extra):
+            raise SystemExit("  --asset 指的文件不存在：%s" % extra)
+        edata = open(extra, "rb").read()
+        esha = hashlib.sha256(edata).hexdigest()
+        ename = os.path.basename(extra)
+        eurl = ("%s/repos/%s/releases/%d/assets?name=%s"
+                % (UPLOADS, REPO, rel["id"], urllib.parse.quote(ename)))
+        st, eres = gh_call(token, "POST", eurl, raw=edata,
+                           content_type="application/octet-stream")
+        if st != 201:
+            raise SystemExit("  上传 %s 失败 HTTP %s: %s" % (ename, st, eres))
+        print("     上传 %s (%d 字节, %s)" % (ename, len(edata), esha[:16]))
+        verify_asset(token, eres, esha, edata)
 
     with open(STATE, "w", encoding="utf-8") as f:
         json.dump({"versionCode": code, "versionName": name, "sourceHash": src_hash,

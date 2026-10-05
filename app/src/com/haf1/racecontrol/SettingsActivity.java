@@ -1,6 +1,7 @@
 package com.haf1.racecontrol;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.os.Bundle;
 import android.text.InputType;
@@ -51,11 +52,14 @@ public class SettingsActivity extends Activity {
     private Spinner dySpinner;
     private TextView testResult;
 
-    /** 回放测试用的两个下拉框（第一个选项永远是"官方流"）。 */
-    private Spinner replaySpinner;
+    /** 回放文件状态那一行，以及「用户刚选的文件」这两个暂存值。 */
+    private TextView replayDetail;
+    private String pendingUri = "";
+    private String pendingName = "";
     private Spinner speedSpinner;
-    private java.util.List<ReplayClient.Pack> replayPacks =
-            new java.util.ArrayList<ReplayClient.Pack>();
+
+    /** 文件选择器的请求码。 */
+    private static final int REQ_PICK_RCLOG = 0x5243;   // "RC"
 
     private static final int[] SPEEDS = {10, 30, 60, 120, 300};
     private static final String[] SPEED_LABELS = {
@@ -111,61 +115,55 @@ public class SettingsActivity extends Activity {
 
         header(root, "回放测试（假数据）");
         // 存在的意义：真机上的崩溃只在真实比赛数据下出现，而一年只有二十几场，
-        // 崩了就得再等一周，还不能复现。回放包是官方归档里的一场真实比赛
+        // 崩了就得再等一周，还不能复现。回放文件是官方归档里的一场真实比赛
         // （快照 + 每条增量都在），格式和线上收到的一模一样 —— 于是
         // "等下一场"就变成"随时重放昨天那场"。
-        label(root, "用官方归档里的一场真实比赛来跑界面，不需要比赛、不需要网络。",
-                "包里是一条完整时间线：接上时先给一份完整快照"
+        label(root, "用一个 .rclog 文件跑界面，不需要比赛、不需要网络。",
+                "文件里是一条完整时间线：接上时先给一份完整快照"
                         + "（和真的连上去时一样，几百条历史消息 + 22 辆车），"
                         + "之后逐条放增量。走的解析和渲染代码与实时完全一致。"
                         + "放出来的增量消息时间会被改成「现在」，所以提醒、闪动、"
                         + "全屏横幅都会真的触发；快照里的历史消息仍然是旧的，"
                         + "不会被当成新消息炸你一屏。");
 
-        replayPacks = loadPacks();
-        java.util.List<String> packLabels = new java.util.ArrayList<String>();
-        packLabels.add("官方流（正常使用，实时数据）");
-        for (int i = 0; i < replayPacks.size(); i++) {
-            packLabels.add(replayPacks.get(i).label());
-        }
-
-        replaySpinner = new Spinner(this);
-        ArrayAdapter<String> packAdapter = new ArrayAdapter<String>(this,
-                android.R.layout.simple_spinner_item, packLabels);
-        packAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        replaySpinner.setAdapter(packAdapter);
-        replaySpinner.setSelection(indexOfPack(p.replayPack));
-        root.addView(replaySpinner);
-
-        // 选到哪个包，下面就把它的底细写出来
-        final TextView packDetail = new TextView(this);
-        packDetail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        packDetail.setTextColor(0xFF78909C);
-        packDetail.setPadding(0, dp(4), 0, dp(8));
-        root.addView(packDetail);
-
-        final Runnable showDetail = new Runnable() {
-            public void run() {
-                int sel = replaySpinner.getSelectedItemPosition();
-                if (sel <= 0 || sel - 1 >= replayPacks.size()) {
-                    packDetail.setText("当前模式：连 F1 官方公开流（实时）。"
-                            + "比赛开始时用这个。");
-                    return;
-                }
-                ReplayClient.Pack pk = replayPacks.get(sel - 1);
-                packDetail.setText("当前模式：回放。" + pk.detail());
-            }
-        };
-        replaySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            public void onItemSelected(AdapterView<?> parent, View view,
-                                       int position, long id) {
-                showDetail.run();
-            }
-
-            public void onNothingSelected(AdapterView<?> parent) {
+        // ★ 不用申请任何存储权限：系统的文件选择器（SAF）把文件交给 App，
+        //   所以文件放哪儿都行 —— 下载目录、网盘、U 盘、甚至别人传给你的。
+        //   用「应用私有目录 + 要你拿数据线拷进去」那种做法，在
+        //   Android 4.4 以后第三方文件管理器根本写不进去，只会让人以为 App 坏了。
+        Button pick = new Button(this);
+        pick.setText("选择 .rclog 文件…");
+        pick.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                pickReplayFile();
             }
         });
-        showDetail.run();
+        root.addView(pick);
+
+        Button clearReplay = new Button(this);
+        clearReplay.setText("关闭回放（改回官方流）");
+        clearReplay.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                pendingUri = "";
+                pendingName = "";
+                p.replayUri = "";
+                p.replayName = "";
+                // 立刻落盘：用户可能不点「保存」就返回，那样就白关了
+                p.save(SettingsActivity.this);
+                showReplayState("已关闭回放，返回后连官方流。");
+            }
+        });
+        root.addView(clearReplay);
+
+        replayDetail = new TextView(this);
+        replayDetail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        replayDetail.setTextColor(0xFF78909C);
+        replayDetail.setPadding(0, dp(6), 0, dp(8));
+        root.addView(replayDetail);
+
+        // 进来先把当前状态写出来（已选的文件名 + 它的底细）
+        pendingUri = p.replayUri == null ? "" : p.replayUri;
+        pendingName = p.replayName == null ? "" : p.replayName;
+        showReplayState(null);
 
         TextView speedLabel = new TextView(this);
         speedLabel.setText("回放倍速");
@@ -181,10 +179,11 @@ public class SettingsActivity extends Activity {
         speedSpinner.setSelection(speedIndex(p.replaySpeed));
         root.addView(speedSpinner);
 
-        label(root, "回放只放一遍就停，不会循环，也不会去连网络。"
-                        + "想回到正常使用，把上面那项选回「官方流」再保存即可。",
-                "这些包是构建时打进 APK 的（两个包合计约 860 KB），"
-                        + "不占手机存储、不用下载。");
+        label(root, "回放只放一遍就停，不会循环，也不会去连网络。",
+                "示例文件挂在项目的 Releases 页面上（.rclog），下载到手机后"
+                        + "用上面的按钮选它就行。APK 里**不再内置**任何示例数据 ——"
+                        + "v3.1.x 把两个包打进去，体积从 85 KB 涨到 845 KB，"
+                        + "其中 751 KB 全是示例数据，不划算。");
 
         header(root, "显示与过滤");
 
@@ -470,7 +469,8 @@ public class SettingsActivity extends Activity {
         p.dyMode = Prefs.clamp(dySpinner.getSelectedItemPosition(), 0, 3);
         p.dyEscalateSec = Prefs.clamp(parse(dySecondsBox.getText().toString(), 15), 1, 120);
 
-        p.replayPack = chosenPack();
+        p.replayUri = pendingUri;
+        p.replayName = pendingName;
         p.replaySpeed = chosenSpeed();
 
         autoStopBox.setText(String.valueOf(p.alarmAutoStopSec));
@@ -496,44 +496,140 @@ public class SettingsActivity extends Activity {
         cooldownBox.setText(String.valueOf(p.cooldownSec));
         dySpinner.setSelection(Prefs.clamp(p.dyMode, 0, 3));
         dySecondsBox.setText(String.valueOf(p.dyEscalateSec));
-        if (replaySpinner != null) {
-            replaySpinner.setSelection(indexOfPack(p.replayPack));
-        }
         if (speedSpinner != null) {
             speedSpinner.setSelection(speedIndex(p.replaySpeed));
         }
+        pendingUri = p.replayUri == null ? "" : p.replayUri;
+        pendingName = p.replayName == null ? "" : p.replayName;
+        showReplayState(null);
     }
 
-    /** assets/replay/index.json 里的包清单。读不到就当作没有回放包。 */
-    private java.util.List<ReplayClient.Pack> loadPacks() {
-        java.io.InputStream in = null;
+    // ------------------------------------------------------------------
+    // 回放文件：选一个 .rclog
+    // ------------------------------------------------------------------
+
+    /**
+     * 让用户挑一个 {@code .rclog}。
+     *
+     * ★ 用系统的文件选择器（ACTION_OPEN_DOCUMENT），**不申请任何存储权限**。
+     *   Android 6 上读 /sdcard/Download 是要运行时权限的（得弹窗、还得处理
+     *   "用户拒绝"，为了放一个文件不值）。SAF 把访问权按文件发给 App，
+     *   文件在哪儿都行，连网盘里的都能选。
+     */
+    private void pickReplayFile() {
+        Intent it = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        it.addCategory(Intent.CATEGORY_OPENABLE);
+        it.setType("*/*");
         try {
-            in = getAssets().open("replay/index.json");
-            return ReplayClient.readIndex(in);
+            startActivityForResult(it, REQ_PICK_RCLOG);
         } catch (Throwable t) {
-            return new java.util.ArrayList<ReplayClient.Pack>();
-        } finally {
-            if (in != null) {
+            showReplayState("这台设备上没有可用的文件选择器：" + t);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int result, Intent data) {
+        super.onActivityResult(req, result, data);
+        if (req != REQ_PICK_RCLOG) {
+            return;
+        }
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            showReplayState("没有选择文件。");
+            return;
+        }
+        android.net.Uri uri = data.getData();
+        // 尽量把这个文件的访问权"记住"，否则重启 App 后可能就读不到了
+        try {
+            getContentResolver().takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Throwable ignored) {
+            // 有些来源（比如纯 file:// 的）本来就不支持持久授权，不影响本次使用
+        }
+        pendingUri = uri.toString();
+        pendingName = displayName(uri);
+        showReplayState("已选择，正在读文件信息…");
+        readReplayMeta(uri);
+    }
+
+    /** 从选择器给的 URI 里挖出个像样的文件名。挖不到就用 URI 尾巴。 */
+    private String displayName(android.net.Uri uri) {
+        try {
+            android.database.Cursor c = getContentResolver().query(uri, null, null,
+                    null, null);
+            if (c != null) {
                 try {
-                    in.close();
-                } catch (java.io.IOException ignored) {
-                    // 关不掉不值得报
+                    int idx = c.getColumnIndex(
+                            android.provider.OpenableColumns.DISPLAY_NAME);
+                    if (c.moveToFirst() && idx >= 0) {
+                        String s = c.getString(idx);
+                        if (s != null && s.length() > 0) {
+                            return s;
+                        }
+                    }
+                } finally {
+                    c.close();
                 }
             }
+        } catch (Throwable ignored) {
+            // 查不到就退回 URI
         }
+        String tail = uri.getLastPathSegment();
+        return tail == null ? "回放文件" : tail;
     }
 
-    /** 第 0 项是"官方流"，所以包在列表里的位置要 +1。 */
-    private int indexOfPack(String packId) {
-        if (packId == null || packId.length() == 0) {
-            return 0;
-        }
-        for (int i = 0; i < replayPacks.size(); i++) {
-            if (replayPacks.get(i).id.equals(packId)) {
-                return i + 1;
+    /**
+     * 读文件自带的元信息来显示"这是什么比赛"。
+     *
+     * ★ 必须在后台线程：文件可能在网盘上，主线程读它一样会抛
+     *   NetworkOnMainThreadException —— 这正是 v3.1.1 修的那个坑。
+     */
+    private void readReplayMeta(final android.net.Uri uri) {
+        new Thread(new Runnable() {
+            public void run() {
+                ReplayClient.Meta m = null;
+                java.io.InputStream in = null;
+                try {
+                    in = getContentResolver().openInputStream(uri);
+                    m = ReplayClient.readMeta(in);
+                } catch (Throwable ignored) {
+                    // 读不出来就走下面的兜底文案
+                }
+                final String line;
+                if (m == null) {
+                    line = "已选择：" + pendingName
+                            + "\n这个文件没有 RCLOG1 元信息头，"
+                            + "读不出是哪场比赛 —— 但照样能放。";
+                } else {
+                    pendingName = m.label();
+                    line = "已选择：" + m.label() + "\n" + m.detail()
+                            + (m.note.length() > 0 ? "\n" + m.note : "");
+                }
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        showReplayState(line);
+                    }
+                });
             }
+        }, "rclog-meta").start();
+    }
+
+    /** 把当前回放状态写到那行小字上。extra 非空就顶掉默认文案。 */
+    private void showReplayState(String extra) {
+        if (replayDetail == null) {
+            return;
         }
-        return 0;
+        if (extra != null) {
+            replayDetail.setText(extra + (pendingUri.length() == 0
+                    ? "\n（保存后生效）" : "\n（点「保存」后生效）"));
+            return;
+        }
+        if (pendingUri.length() == 0) {
+            replayDetail.setText("当前模式：连 F1 官方公开流（实时）。"
+                    + "比赛开始时用这个。");
+            return;
+        }
+        replayDetail.setText("当前模式：回放 " + pendingName
+                + "\n点「保存」后返回主界面就会开始放。");
     }
 
     private static int speedIndex(int speed) {
@@ -551,17 +647,6 @@ public class SettingsActivity extends Activity {
             i = 2;
         }
         return SPEEDS[i];
-    }
-
-    private String chosenPack() {
-        if (replaySpinner == null) {
-            return "";
-        }
-        int sel = replaySpinner.getSelectedItemPosition();
-        if (sel <= 0 || sel - 1 >= replayPacks.size()) {
-            return "";
-        }
-        return replayPacks.get(sel - 1).id;
     }
 
     /** 测试官方流是否可达。只做一次握手，不建长连接。 */

@@ -46,78 +46,184 @@ public class ReplayClient implements FeedSource {
         InputStream open() throws IOException;
     }
 
-    /** 回放包清单里的一条（来自 assets/replay/index.json）。 */
-    public static final class Pack {
-        public final String id;
+    /**
+     * {@code .rclog} 第一行的魔数。App 靠它认出"这是回放文件"。
+     *
+     * 第一行是**可选**的 —— 没有它也能放，只是界面上显示不出"这是什么比赛"。
+     */
+    public static final String MAGIC = "RCLOG1";
+
+    /**
+     * {@code .rclog} 自带的元信息（第一行那个 JSON）。
+     *
+     * 存在的意义：设置页让用户**挑一个文件**，挑完总得告诉他"这是什么"。
+     * 没有它的话就只能显示个文件名，而文件名是用户自己起的。
+     */
+    public static final class Meta {
         public final String name;
         public final String date;
+        public final String session;
+        public final long snapshotMs;
         public final long durationMs;
         public final int snapshotMsgs;
         public final int frames;
-        public final long bytes;
+        public final String note;
 
-        Pack(String id, String name, String date, long durationMs,
-             int snapshotMsgs, int frames, long bytes) {
-            this.id = id;
+        Meta(String name, String date, String session, long snapshotMs,
+             long durationMs, int snapshotMsgs, int frames, String note) {
             this.name = name;
             this.date = date;
+            this.session = session;
+            this.snapshotMs = snapshotMs;
             this.durationMs = durationMs;
             this.snapshotMsgs = snapshotMsgs;
             this.frames = frames;
-            this.bytes = bytes;
+            this.note = note;
         }
 
-        /** 设置页里显示的一行字。 */
+        /** "2026 巴林站 正赛 · 中途接入（2026-10-04）"。 */
         public String label() {
-            return name + "（" + date + "）";
+            if (name.length() == 0) {
+                return "回放文件";
+            }
+            return name + (date.length() > 0 ? "（" + date + "）" : "");
         }
 
-        /** "2 小时 40 分 · 194 条历史消息 · 400 KB"。 */
+        /** "1 小时 39 分 · 接上时已有 194 条消息 · 2460 帧"。 */
         public String detail() {
             long min = durationMs / 60000L;
             return (min >= 60 ? (min / 60) + " 小时 " + (min % 60) + " 分"
                     : min + " 分钟")
                     + " · 接上时已有 " + snapshotMsgs + " 条消息"
-                    + " · " + (bytes / 1024) + " KB";
+                    + " · " + frames + " 帧";
+        }
+    }
+
+    /** {@link #open} 的返回：元信息 + 已经**定位到第一帧**的流。 */
+    public static final class Opened {
+        public final Meta meta;
+        public final InputStream stream;
+
+        Opened(Meta meta, InputStream stream) {
+            this.meta = meta;
+            this.stream = stream;
         }
     }
 
     /**
-     * 解析 {@code index.json}。调用方负责 open/close。
-     *
-     * 坏条目直接跳过 —— 一个包写坏了不该让整个回放功能消失。
+     * 解析第一行元信息。不是 {@code RCLOG1} 开头就返回 null。
      */
-    public static java.util.List<Pack> readIndex(InputStream in) throws IOException {
-        java.util.List<Pack> out = new ArrayList<Pack>();
-        if (in == null) {
-            return out;
+    public static Meta parseMeta(String line) {
+        if (line == null) {
+            return null;
         }
-        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) {
-            bo.write(buf, 0, n);
+        String s = line.trim();
+        if (!s.startsWith(MAGIC)) {
+            return null;
+        }
+        String js = s.substring(MAGIC.length()).trim();
+        if (js.length() == 0) {
+            return null;
         }
         try {
-            JSONArray arr = new JSONArray(new String(bo.toByteArray(), "UTF-8"));
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject o = arr.optJSONObject(i);
-                if (o == null) {
-                    continue;
-                }
-                String id = o.optString("id", "");
-                if (id.length() == 0) {
-                    continue;
-                }
-                out.add(new Pack(id, o.optString("name", id),
-                        o.optString("date", ""), o.optLong("durationMs", 0L),
-                        o.optInt("snapshotMsgs", 0), o.optInt("frames", 0),
-                        o.optLong("bytes", 0L)));
-            }
+            JSONObject o = new JSONObject(js);
+            return new Meta(o.optString("name", ""), o.optString("date", ""),
+                    o.optString("session", ""), o.optLong("snapshotMs", 0L),
+                    o.optLong("durationMs", 0L), o.optInt("snapshotMsgs", 0),
+                    o.optInt("frames", 0), o.optString("note", ""));
         } catch (Exception e) {
-            // 整个 index 坏了就当没有包
+            return null;
         }
-        return out;
+    }
+
+    /**
+     * 认得出 gzip 就解开，认不出就当纯文本。
+     *
+     * {@code .rclog} 平时是 gzip 的（4 MB 压到 400 KB），但不压缩的也允许 ——
+     * 用户手搓一个、或者以后换压缩方式，都不该让 App 罢工。
+     */
+    public static InputStream maybeGunzip(InputStream in) throws IOException {
+        if (in == null) {
+            return null;
+        }
+        java.io.PushbackInputStream p = new java.io.PushbackInputStream(in, 2);
+        byte[] head = new byte[2];
+        int n = 0;
+        while (n < 2) {
+            int got = p.read(head, n, 2 - n);
+            if (got < 0) {
+                break;
+            }
+            n += got;
+        }
+        if (n > 0) {
+            p.unread(head, 0, n);
+        }
+        if (n == 2 && (head[0] & 0xff) == 0x1f && (head[1] & 0xff) == 0x8b) {
+            return new java.util.zip.GZIPInputStream(p);
+        }
+        return p;
+    }
+
+    /**
+     * 打开一个 {@code .rclog}：解压（如果需要）、取元信息，
+     * 返回一个**正好停在第一帧开头**的流。
+     *
+     * ★ 只窥探开头 6 个字节来判断"有没有元信息头"。
+     *   不能"先读一行再看是不是头"：没有头的时候，第一行是一帧完整快照，
+     *   巴林那场的快照帧有 80 KB，读进来再想塞回去就没法塞了。
+     */
+    public static Opened open(InputStream raw) throws IOException {
+        InputStream s = maybeGunzip(raw);
+        java.io.PushbackInputStream p =
+                new java.io.PushbackInputStream(s, MAGIC.length() + 2);
+        byte[] magic = MAGIC.getBytes("UTF-8");
+        byte[] head = new byte[magic.length];
+        int n = 0;
+        while (n < head.length) {
+            int got = p.read(head, n, head.length - n);
+            if (got < 0) {
+                break;
+            }
+            n += got;
+        }
+        if (n == head.length && java.util.Arrays.equals(head, magic)) {
+            // 是元信息头：把这一行剩下的读完
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            int b;
+            while ((b = p.read()) >= 0 && b != '\n') {
+                bo.write(b);
+                if (bo.size() > 16000) {
+                    break;              // 第一行不该这么长
+                }
+            }
+            Meta m = parseMeta(MAGIC + new String(bo.toByteArray(), "UTF-8"));
+            return new Opened(m, p);
+        }
+        // 不是头：把这几个字节原样塞回去，流仍从第一帧开始
+        if (n > 0) {
+            p.unread(head, 0, n);
+        }
+        return new Opened(null, p);
+    }
+
+    /** 只要元信息（设置页选完文件后显示用）。读不出来返回 null。 */
+    public static Meta readMeta(InputStream raw) {
+        InputStream in = raw;
+        try {
+            Opened o = open(in);
+            return o.meta;
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException ignored) {
+                    // 关不掉不值得报
+                }
+            }
+        }
     }
 
     /** SignalR 的记录分隔符。 */
@@ -133,7 +239,14 @@ public class ReplayClient implements FeedSource {
     private final Opener opener;
     private final F1Client.Listener listener;
     private final int speed;
-    private final long spanMs;
+    /**
+     * 回放总时长，只用来算进度百分比。
+     *
+     * ★ 不是 final：调用方多半**不知道**时长（文件是用户临时挑的，
+     *   读它得开流、可能还得读网盘，不能在主线程干）。所以传 0 进来，
+     *   由 {@link #runForever} 读到文件自带的元信息后自己补上。
+     */
+    private volatile long spanMs;
     private final long coalesceMs;
     private final DateFormat utcFmt;
     private final F1Feed feed = new F1Feed();
@@ -141,6 +254,7 @@ public class ReplayClient implements FeedSource {
     private volatile boolean closed;
     private volatile int percent;
     private volatile long positionMs;
+    private volatile Meta meta;
     private String lastError = "";
     /** 消息时间戳的单调计数器，见 {@link #nextStamp}。 */
     private long stampSeq;
@@ -188,6 +302,14 @@ public class ReplayClient implements FeedSource {
         return lastError;
     }
 
+    /**
+     * 文件自带的元信息。文件里没有 {@code RCLOG1} 头就是 null，
+     * 主界面这时候只能显示文件名。
+     */
+    public Meta meta() {
+        return meta;
+    }
+
     public int speed() {
         return speed;
     }
@@ -210,7 +332,15 @@ public class ReplayClient implements FeedSource {
         BufferedReader r = null;
         List<String> batch = new ArrayList<String>();
         try {
-            r = new BufferedReader(new InputStreamReader(opener.open(), "UTF-8"),
+            // ★ 文件里第一行可能是元信息头（RCLOG1 {...}），open() 会认出它、
+            //   顺手摘掉，交给我们的流正好停在第一帧开头。
+            Opened op = open(opener.open());
+            this.meta = op.meta;
+            // 调用方不知道时长（也没法在主线程去读），用文件自带的
+            if (spanMs <= 0 && op.meta != null && op.meta.durationMs > 0) {
+                spanMs = op.meta.durationMs;
+            }
+            r = new BufferedReader(new InputStreamReader(op.stream, "UTF-8"),
                     1 << 16);
             long baseWall = 0;
             long startMs = -1;
@@ -283,7 +413,7 @@ public class ReplayClient implements FeedSource {
         }
     }
 
-    /** 把攒下的一批帧喂进去；批内所有增量都用同一个"现在"。 */
+    /** 把攒下的一批帧喂进去。 */
     private void flush(List<String> batch, long now) {
         boolean changed = false;
         for (int i = 0; i < batch.size(); i++) {

@@ -118,9 +118,11 @@ def main():
     print()
     # F1Feed 的真实快照夹具（官方归档生成）。
     fixture = os.path.join(HERE, "mock_data", "f1_snapshot_real.json")
-    # 回放包（官方归档生成的完整时间线）。挑**中途接入**那一份 ——
+    # 回放文件（官方归档生成的完整时间线）。挑**中途接入**那一份 ——
     # 它的快照里有 194 条消息和 22 辆车，是真正会让真机崩掉的那种负载。
-    pack = os.path.join(HERE, "mock_data", "bahrain2026_race_mid.pack")
+    # ★ 这就是发布到 Releases 上的那个示例文件，一份两用：既是这里的夹具，
+    #   也是用户下载后能在 App 里选的文件。所以它必须覆盖 gzip + RCLOG1 头。
+    pack = os.path.join(HERE, "mock_data", "bahrain2026_race_mid.rclog")
     # ★ -Dfile.encoding=UTF-8 不能省：不放的话 JVM 按 Windows 默认代码页（GBK）
     #   输出中文，父进程按 UTF-8 读，报告直接变乱码 —— 断言数是 ASCII 还能看，
     #   中文标签就全废了。

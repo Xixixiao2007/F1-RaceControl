@@ -1331,18 +1331,123 @@ public class TzTest {
         //   fixture 只喂**一份最终快照**，验证的是"解析对不对"；
         //   这里喂的是**完整时间线**（快照 + 几千条增量），验证的是
         //   "从连上到比赛结束，整条管线会不会中途炸掉"。
+
+        // ---- .rclog 格式本身：元信息头、gzip 自动识别、老格式兼容 ----
+        //      ★ 这一小节不依赖任何文件，永远跑得到。上面那节要靠 -Df1.pack。
+        section("ReplayClient：.rclog 的元信息头 / gzip 识别 / 老格式兼容");
+        final String frame1 = "00:00:01.000{\"type\":3,\"result\":{}}";
+        final String frame2 = "00:00:02.000{\"type\":1,\"target\":\"X\",\"arguments\":[{}]}";
+        try {
+            // (1) 不压缩、也没有头 —— v3.1.x 的老格式，必须照样能放
+            String legacy = frame1 + "\n" + frame2 + "\n";
+            ReplayClient.Opened a = ReplayClient.open(new java.io.ByteArrayInputStream(
+                    legacy.getBytes("UTF-8")));
+            eq("没头的文件照放（meta 是 null）",
+                    Boolean.valueOf(a.meta == null), Boolean.TRUE);
+            java.io.BufferedReader ra = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(a.stream, "UTF-8"));
+            eq("老格式的第一帧没被吃掉", ra.readLine(), frame1);
+            eq("老格式的第二帧也在", ra.readLine(), frame2);
+            ra.close();
+
+            // (2) 带头、且 gzip 压缩 —— 这是 v3.2.0 起的正式格式
+            String body = frame1 + "\n" + frame2 + "\n";
+            String full = "RCLOG1 {\"name\":\"测试场次\",\"date\":\"2026-10-04\","
+                    + "\"session\":\"x/y/\",\"snapshotMs\":740000,\"durationMs\":60000,"
+                    + "\"snapshotMsgs\":194,\"frames\":2460,\"note\":\"备注\"}\n" + body;
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo);
+            gz.write(full.getBytes("UTF-8"));
+            gz.close();
+            byte[] gzBytes = bo.toByteArray();
+            eq("测的数据确实是 gzip（魔数 1f 8b）",
+                    Boolean.valueOf((gzBytes[0] & 0xff) == 0x1f
+                            && (gzBytes[1] & 0xff) == 0x8b), Boolean.TRUE);
+
+            ReplayClient.Opened b = ReplayClient.open(new java.io.ByteArrayInputStream(gzBytes));
+            eq("gzip 被自动认出来并解开（meta 读到了）",
+                    Boolean.valueOf(b.meta != null), Boolean.TRUE);
+            if (b.meta != null) {
+                eq("元信息里的名字", b.meta.name, "测试场次");
+                eq("元信息里的日期", b.meta.date, "2026-10-04");
+                eq("元信息里的时长", Long.valueOf(b.meta.durationMs), Long.valueOf(60000L));
+                eq("元信息里的历史消息条数",
+                        Integer.valueOf(b.meta.snapshotMsgs), Integer.valueOf(194));
+                eq("label 拼得对", b.meta.label(), "测试场次（2026-10-04）");
+                eq("detail 里带时长和条数",
+                        Boolean.valueOf(b.meta.detail().indexOf("1 分钟") >= 0
+                                && b.meta.detail().indexOf("194 条消息") >= 0), Boolean.TRUE);
+            }
+            java.io.BufferedReader rb = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(b.stream, "UTF-8"));
+            eq("★ 摘掉头之后，流**正好**停在第一帧", rb.readLine(), frame1);
+            eq("后面的帧一帧不少", rb.readLine(), frame2);
+            eq("读完就是结尾", rb.readLine(), null);
+            rb.close();
+
+            // (3) 只有头、没有帧 —— 不能崩，也不能把异常当帧
+            String onlyHead = "RCLOG1 {\"name\":\"空\"}\n";
+            java.io.ByteArrayOutputStream bo2 = new java.io.ByteArrayOutputStream();
+            java.util.zip.GZIPOutputStream gz2 = new java.util.zip.GZIPOutputStream(bo2);
+            gz2.write(onlyHead.getBytes("UTF-8"));
+            gz2.close();
+            ReplayClient.Opened c = ReplayClient.open(
+                    new java.io.ByteArrayInputStream(bo2.toByteArray()));
+            eq("只有头的文件不崩、meta 也有",
+                    Boolean.valueOf(c.meta != null && "空".equals(c.meta.name)), Boolean.TRUE);
+            eq("只有头的文件读出来一条帧都没有",
+                    new java.io.BufferedReader(new java.io.InputStreamReader(
+                            c.stream, "UTF-8")).readLine(), null);
+
+            // (4) 空文件：不能把 IOException 抛到调用方脸上
+            ReplayClient.Opened d = ReplayClient.open(new java.io.ByteArrayInputStream(
+                    new byte[0]));
+            eq("空文件也能开（meta 为 null）",
+                    Boolean.valueOf(d.meta == null), Boolean.TRUE);
+
+            // (5) 头的 JSON 坏了：当没有头处理，但那 6 个字节不能被吞掉后当帧
+            String badHead = "RCLOG1 {这不是JSON}\n" + frame1 + "\n";
+            ReplayClient.Opened e = ReplayClient.open(new java.io.ByteArrayInputStream(
+                    badHead.getBytes("UTF-8")));
+            eq("头坏了就说没有元信息", Boolean.valueOf(e.meta == null), Boolean.TRUE);
+            eq("★ 头坏了也不能把首帧吃掉",
+                    new java.io.BufferedReader(new java.io.InputStreamReader(
+                            e.stream, "UTF-8")).readLine(), frame1);
+
+            // (6) parseMeta 直接测：不是头就 null
+            eq("普通帧拿去 parseMeta 得到 null",
+                    ReplayClient.parseMeta(frame1), null);
+            eq("RCLOG1 后面没东西也是 null",
+                    ReplayClient.parseMeta("RCLOG1"), null);
+            eq("RCLOG1 后面跟坏 JSON 也是 null",
+                    ReplayClient.parseMeta("RCLOG1 {{{"), null);
+        } catch (Exception ex) {
+            eq("rclog 格式测试不该抛异常：" + ex, Boolean.TRUE, Boolean.TRUE);
+        }
+
         section("ReplayClient：真回放包走完整管线");
         String pack = System.getProperty("f1.pack", "");
-        eq("回放包存在（tools/mock_data/*.pack）",
+        eq("回放文件存在（tools/mock_data/*.rclog）",
                 Boolean.valueOf(pack.length() > 0
                         && new java.io.File(pack).isFile()), Boolean.TRUE);
 
         if (pack.length() > 0 && new java.io.File(pack).isFile()) {
-            // ---- 自己先扫一遍包：帧数、时长、快照点 ----
+            // ---- 自己先扫一遍：帧数、时长、快照点 ----
+            //      用 ReplayClient.open 而不是 FileInputStream —— 文件是 gzip 的，
+            //      而且第一行是 RCLOG1 元信息头，这两件事都得先剥掉。
             java.util.List<String> packFrames = new java.util.ArrayList<String>();
+            ReplayClient.Opened pop = ReplayClient.open(
+                    new java.io.FileInputStream(pack));
+            eq("真文件里认出了 RCLOG1 元信息头",
+                    Boolean.valueOf(pop.meta != null), Boolean.TRUE);
+            if (pop.meta != null) {
+                eq("元信息里有比赛名",
+                        Boolean.valueOf(pop.meta.name.length() > 0), Boolean.TRUE);
+                eq("元信息里的帧数 == 实际读到的帧数（下面验证）",
+                        Boolean.valueOf(pop.meta.frames > 1000), Boolean.TRUE);
+            }
             java.io.BufferedReader pbr = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(
-                            new java.io.FileInputStream(pack), "UTF-8"), 1 << 16);
+                    new java.io.InputStreamReader(pop.stream, "UTF-8"), 1 << 16);
             String pln;
             while ((pln = pbr.readLine()) != null) {
                 pln = pln.trim();
@@ -1354,6 +1459,11 @@ public class TzTest {
 
             eq("包里有上千帧", Boolean.valueOf(packFrames.size() > 1000),
                     Boolean.TRUE);
+            if (pop.meta != null) {
+                eq("★ 元信息里写的帧数与真实帧数一致",
+                        Integer.valueOf(pop.meta.frames),
+                        Integer.valueOf(packFrames.size()));
+            }
             final String firstFrame = packFrames.get(0);
             String lastFrame = packFrames.get(packFrames.size() - 1);
             long packSnapMs = ReplayClient.parseOffset(firstFrame.substring(0, 12));

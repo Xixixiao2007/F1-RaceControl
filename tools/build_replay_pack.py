@@ -33,9 +33,32 @@
 
 ## 产物落在哪
 
-    app/assets/replay/<id>.pack.gz    打进 APK 的那份（gzip）
-    app/assets/replay/index.json      包清单（设置页读它）
-    tools/mock_data/<id>.pack         同样内容但不压缩，给桌面单测用
+    tools/mock_data/<id>.rclog    就这一个文件
+
+★ 这一个文件**同时**是两件事：
+
+    1. 桌面单测的夹具（run_tests.py 用它跑完整管线）
+    2. 挂在 GitHub Release 上的示例数据，用户下载后在 App 里选它来回放
+
+  所以只留一份、只产出一次，不往 APK 里塞。
+  （v3.1.x 把两个包打进了 APK，体积从 85 KB 涨到 845 KB，
+   其中 751 KB 全是示例数据 —— v3.2.0 起 App 不再内置任何示例数据。）
+
+## .rclog 是什么
+
+一行元信息 + 一行一帧的完整时间线，整体 gzip：
+
+    RCLOG1 {"name":"...","date":"...","snapshotMs":740000,...}
+    00:12:20.000{"type":3,"result":{...}}          <- 完整快照
+    00:12:21.000{"type":1,"target":"...",...}      <- 增量，同一时刻的多条用 0x1e 分隔
+    ...
+
+第一行是**可选的**（没有它也能放，只是 App 显示不出这是什么比赛）。
+下发格式与线上 WebSocket 逐字节同构，所以 App 里解析和渲染走的是
+和实时完全同一份代码。
+
+★ `.rclog` 只用于**赛后读归档**，不做实时录制 —— 它是导出/导入格式，
+  不是录像格式。
 
 ## ★ 归档服务器必须直连
 
@@ -56,8 +79,10 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 # 从脚本位置推仓库根，别写死绝对路径 —— 别人克隆下来也能跑。
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-ASSET_DIR = os.path.join(ROOT, "app", "assets", "replay")
 MOCK_DIR = os.path.join(HERE, "mock_data")
+
+# .rclog 的魔数与版本。App 靠它认出"这是回放文件"并取元信息。
+MAGIC = "RCLOG1"
 
 BASE = "https://livetiming.formula1.com/static"
 
@@ -263,16 +288,7 @@ def build(session_path, pack_id, name, date, snapshot_ms, extra=None):
             i += 1
         lines.append(fmt_ms(t) + RS.join(recs))
 
-    body = ("\n".join(lines) + "\n").encode("utf-8")
-    gz = gzip.compress(body, 9)
-
-    os.makedirs(ASSET_DIR, exist_ok=True)
-    pack_name = pack_id + ".pack.gz"
-    with open(os.path.join(ASSET_DIR, pack_name), "wb") as fh:
-        fh.write(gz)
-    # 桌面测试用一份没压缩的（省得每次解压）
-    with open(os.path.join(MOCK_DIR, pack_id + ".pack"), "wb") as fh:
-        fh.write(body)
+    body = "\n".join(lines) + "\n"
 
     last = timeline[-1][0] if timeline else snapshot_ms
     meta = {
@@ -280,21 +296,37 @@ def build(session_path, pack_id, name, date, snapshot_ms, extra=None):
         "name": name,
         "date": date,
         "session": session_path,
-        "file": pack_name,
         "snapshotMs": snapshot_ms,
         "startMs": snapshot_ms,
         "endMs": last,
         "frames": len(lines),
-        "bytes": len(gz),
-        "rawBytes": len(body),
         "snapshotMsgs": len(msgs),
         "durationMs": last - snapshot_ms,
     }
     if extra:
         meta.update(extra)
-    print("\n包: %s  %.1f KB 原始 → %.1f KB gzip；%d 帧；可播 %s → %s（%s）"
-          % (pack_name, len(body) / 1024.0, len(gz) / 1024.0, len(lines),
+
+    # 元信息头单独一行；App 会跳过它，同时用它显示"这是什么比赛"。
+    # ★ 不带头的时间线也能放（老文件），所以它是**可选**的。
+    text = MAGIC + " " + json.dumps(meta, ensure_ascii=False,
+                                    separators=(",", ":")) + "\n" + body
+    raw = text.encode("utf-8")
+    gz = gzip.compress(raw, 9)
+
+    os.makedirs(MOCK_DIR, exist_ok=True)
+    out_name = pack_id + ".rclog"
+    out_path = os.path.join(MOCK_DIR, out_name)
+    with open(out_path, "wb") as fh:
+        fh.write(gz)
+
+    meta["file"] = out_name
+    meta["bytes"] = len(gz)
+    meta["rawBytes"] = len(raw)
+
+    print("\n%s  %.1f KB 原始 → %.1f KB gzip；%d 帧；可播 %s → %s（%s）"
+          % (out_name, len(raw) / 1024.0, len(gz) / 1024.0, len(lines),
              fmt_ms(snapshot_ms), fmt_ms(last), fmt_ms(last - snapshot_ms)))
+    print("落在: %s" % out_path)
     return meta
 
 
@@ -308,22 +340,10 @@ def main():
     ap.add_argument("--note", default="")
     args = ap.parse_args()
 
-    packs = []
-    idx_path = os.path.join(ASSET_DIR, "index.json")
-    if os.path.exists(idx_path):
-        with open(idx_path, encoding="utf-8") as fh:
-            packs = json.load(fh)
-        packs = [p for p in packs if p.get("id") != args.id]
-
     extra = {"note": args.note} if args.note else None
-    meta = build(args.session, args.id, args.name, args.date,
-                 args.snapshot_ms, extra)
-    packs.append(meta)
-    packs.sort(key=lambda p: (p.get("date", ""), p.get("snapshotMs", 0)),
-               reverse=True)
-    with open(idx_path, "w", encoding="utf-8") as fh:
-        json.dump(packs, fh, ensure_ascii=False, indent=2)
-    print("index.json:", idx_path, "共", len(packs), "个包")
+    build(args.session, args.id, args.name, args.date, args.snapshot_ms, extra)
+    print()
+    print("这个文件同时是单测夹具和 Release 示例数据，不用再拷到别处。")
 
 
 if __name__ == "__main__":

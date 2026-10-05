@@ -314,10 +314,10 @@ public class F1MainActivity extends Activity {
         if (prefs == null) {
             prefs = Prefs.load(this);
         }
-        final String wantPack = prefs.replayPack == null ? "" : prefs.replayPack;
+        final String wantUri = prefs.replayUri == null ? "" : prefs.replayUri;
         final int speed = prefs.replaySpeed;
-        replaying = wantPack.length() > 0;
-        runningSource = sourceKey(wantPack, speed);
+        replaying = wantUri.length() > 0;
+        runningSource = sourceKey(wantUri, speed);
 
         F1Client.Listener listener = new F1Client.Listener() {
             public void onOpen() {
@@ -366,18 +366,23 @@ public class F1MainActivity extends Activity {
         };
 
         if (replaying) {
-            final String pid = wantPack;
-            // 包清单读一次就够（下面两项都从它取），别解析两遍 index.json
-            ReplayClient.Pack pk = findPack(pid);
-            // ★ 包是 gzip 的（原始 4 MB，压完 400 多 KB）。
-            //   asset 里放的就是 .pack.gz，这里要套一层 GZIPInputStream。
+            final android.net.Uri uri = android.net.Uri.parse(wantUri);
+            // ★ 回放文件在哪儿、叫什么、多长，**这会儿全都不知道**：
+            //   它是用户用系统文件选择器挑的，可能躺在下载目录、也可能在网盘上，
+            //   读它得开流 —— 那就绝不能在这条（主）线程上干，否则
+            //   网盘那种会直接抛 NetworkOnMainThreadException。
+            //   所以时长传 0，由 ReplayClient 读到文件自带的元信息后自己补。
             client = new ReplayClient(new ReplayClient.Opener() {
                 public java.io.InputStream open() throws java.io.IOException {
-                    return new java.util.zip.GZIPInputStream(
-                            getAssets().open("replay/" + pid + ".pack.gz"));
+                    java.io.InputStream in = getContentResolver().openInputStream(uri);
+                    if (in == null) {
+                        throw new java.io.IOException("打不开这个文件");
+                    }
+                    return in;
                 }
-            }, listener, speed, pk == null ? 0L : pk.durationMs);
-            stage = "回放：" + (pk == null ? pid : pk.name);
+            }, listener, speed, 0L);
+            stage = "回放：" + (prefs.replayName == null || prefs.replayName.length() == 0
+                    ? "已选文件" : prefs.replayName);
         } else {
             client = new F1Client(listener);
             stage = "正在连官方流…";
@@ -411,10 +416,10 @@ public class F1MainActivity extends Activity {
         updateStatus();
     }
 
-    /** 数据源标识。回放换包或换倍速都要重启采集线程，用它比较。 */
-    private static String sourceKey(String pack, int speed) {
-        return pack == null || pack.length() == 0 ? "live"
-                : "replay:" + pack + ":" + speed;
+    /** 数据源标识。回放换文件或换倍速都要重启采集线程，用它比较。 */
+    private static String sourceKey(String uri, int speed) {
+        return uri == null || uri.length() == 0 ? "live"
+                : "replay:" + uri + ":" + speed;
     }
 
     /** 换数据源：先停掉旧的，再按新配置起来。 */
@@ -437,39 +442,6 @@ public class F1MainActivity extends Activity {
         startClient();
         refreshList();
         refreshUi(false);
-    }
-
-    /** assets/replay/index.json 里的包清单。读不到就返回空表。 */
-    private java.util.List<ReplayClient.Pack> packs() {
-        java.io.InputStream in = null;
-        try {
-            in = getAssets().open("replay/index.json");
-            return ReplayClient.readIndex(in);
-        } catch (Throwable t) {
-            return new java.util.ArrayList<ReplayClient.Pack>();
-        } finally {
-            if (in != null) {
-                try {
-                    in.close();
-                } catch (java.io.IOException ignored) {
-                    // 关不掉不值得报
-                }
-            }
-        }
-    }
-
-    /** 按 id 找包；找不到返回 null（比如 index.json 读坏了）。 */
-    private ReplayClient.Pack findPack(String id) {
-        if (id == null || id.length() == 0) {
-            return null;
-        }
-        java.util.List<ReplayClient.Pack> ps = packs();
-        for (int i = 0; i < ps.size(); i++) {
-            if (ps.get(i).id.equals(id)) {
-                return ps.get(i);
-            }
-        }
-        return null;
     }
 
     /** 新消息：告警 + 列表 + 旗语栏。 */
@@ -664,9 +636,9 @@ public class F1MainActivity extends Activity {
         if (!userToggledFilter) {
             onlyImportant = prefs.noiseFilterEnabled;
         }
-        // 从设置页回来时数据源可能被换了（切回放 / 换包 / 换倍速）。
+        // 从设置页回来时数据源可能被换了（切回放 / 换文件 / 换倍速）。
         // 不重启的话界面还挂在旧数据源上，用户会以为设置没生效。
-        String want = sourceKey(prefs.replayPack, prefs.replaySpeed);
+        String want = sourceKey(prefs.replayUri, prefs.replaySpeed);
         if (runningSource != null && !runningSource.equals(want)) {
             restartClient();
         }
