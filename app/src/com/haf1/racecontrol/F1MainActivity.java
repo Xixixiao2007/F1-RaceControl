@@ -367,6 +367,8 @@ public class F1MainActivity extends Activity {
 
         if (replaying) {
             final String pid = wantPack;
+            // 包清单读一次就够（下面两项都从它取），别解析两遍 index.json
+            ReplayClient.Pack pk = findPack(pid);
             // ★ 包是 gzip 的（原始 4 MB，压完 400 多 KB）。
             //   asset 里放的就是 .pack.gz，这里要套一层 GZIPInputStream。
             client = new ReplayClient(new ReplayClient.Opener() {
@@ -374,8 +376,8 @@ public class F1MainActivity extends Activity {
                     return new java.util.zip.GZIPInputStream(
                             getAssets().open("replay/" + pid + ".pack.gz"));
                 }
-            }, listener, speed, packSpanMs(pid));
-            stage = "回放：" + packName(pid);
+            }, listener, speed, pk == null ? 0L : pk.durationMs);
+            stage = "回放：" + (pk == null ? pid : pk.name);
         } else {
             client = new F1Client(listener);
             stage = "正在连官方流…";
@@ -456,24 +458,18 @@ public class F1MainActivity extends Activity {
         }
     }
 
-    private String packName(String id) {
+    /** 按 id 找包；找不到返回 null（比如 index.json 读坏了）。 */
+    private ReplayClient.Pack findPack(String id) {
+        if (id == null || id.length() == 0) {
+            return null;
+        }
         java.util.List<ReplayClient.Pack> ps = packs();
         for (int i = 0; i < ps.size(); i++) {
             if (ps.get(i).id.equals(id)) {
-                return ps.get(i).name;
+                return ps.get(i);
             }
         }
-        return id;
-    }
-
-    private long packSpanMs(String id) {
-        java.util.List<ReplayClient.Pack> ps = packs();
-        for (int i = 0; i < ps.size(); i++) {
-            if (ps.get(i).id.equals(id)) {
-                return ps.get(i).durationMs;
-            }
-        }
-        return 0L;
+        return null;
     }
 
     /** 新消息：告警 + 列表 + 旗语栏。 */

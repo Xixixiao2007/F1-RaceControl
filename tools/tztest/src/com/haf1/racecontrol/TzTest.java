@@ -39,6 +39,28 @@ public class TzTest {
         System.out.println("== " + title + " ==");
     }
 
+    /**
+     * 只记录「close() 是在哪个线程上被调的」，不做任何真的 socket 操作。
+     *
+     * 用来钉住 v3.1.1 那个崩溃：主线程上 close 一个 SSLSocket 会被 Android
+     * 判成 NetworkOnMainThreadException，而桌面 JVM 没有 StrictMode，
+     * 这种错在桌面上**不会自己暴露**。
+     */
+    static class RecordingSocket extends java.net.Socket {
+        volatile String closedOn = null;
+        volatile int closeCount = 0;
+
+        RecordingSocket() {
+            super();
+        }
+
+        @Override
+        public void close() {
+            closeCount++;
+            closedOn = Thread.currentThread().getName();
+        }
+    }
+
     /** 造一条消息：flag / category / sector / 文本，时间固定自增。 */
     private static long clock = 1700000000000L;
 
@@ -1440,6 +1462,94 @@ public class TzTest {
                                 + rpStale + " 条）",
                         Boolean.valueOf(rpStale >= 180), Boolean.TRUE);
             }
+        }
+
+        // ==================================================================
+        section("F1Client.stop()：绝不在调用线程上 close() socket");
+        // ★ v3.1.1 修的那个崩溃，必须钉住。
+        //
+        //   Android 的 StrictMode 把「主线程上做网络操作」判成
+        //   NetworkOnMainThreadException，而 OpenSSLSocketImpl.close() 也算
+        //   —— 它内部要 shutdownAndFreeSslNative()，属于网络动作。
+        //
+        //   于是「在设置页换数据源 -> 返回主界面 -> onResume 里停掉旧连接」
+        //   这一下会在 resume 阶段抛异常，被包成
+        //   `Unable to resume activity ... NetworkOnMainThreadException`，
+        //   界面根本起不来。栈里只看得到 restartClient -> stop，
+        //   很容易误判成"回放功能坏了"，其实是关连接的方式错了。
+        //
+        //   桌面 JVM 没有 StrictMode，所以这个 bug 在这套测试里
+        //   **不会自己暴露** —— 只能自己造一个假 Socket 去记 close 的线程。
+        {
+            final RecordingSocket rs = new RecordingSocket();
+            final F1Client c = new F1Client(null);
+            c.socket = rs;
+
+            long t0 = System.currentTimeMillis();
+            c.stop();
+            long costMs = System.currentTimeMillis() - t0;
+
+            eq("stop() 立刻返回（" + costMs + " ms），没在调用线程上 close",
+                    Boolean.valueOf(costMs < 500), Boolean.TRUE);
+            eq("stop() 返回那一刻，close 还没有发生在调用线程上",
+                    Boolean.valueOf(!Thread.currentThread().getName()
+                            .equals(rs.closedOn)), Boolean.TRUE);
+
+            // 但连接最终还是得关掉：读循环正阻塞在 read 上，
+            // 不关就要等到 90 秒读超时才退得出来。
+            long deadline = System.currentTimeMillis() + 3000L;
+            while (rs.closeCount == 0 && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(20L);
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+            eq("连接最终真的被关掉了（不能只是不关）",
+                    Integer.valueOf(rs.closeCount), Integer.valueOf(1));
+            eq("close() 发生在别的线程上（" + rs.closedOn + "）",
+                    Boolean.valueOf("f1-close".equals(rs.closedOn)), Boolean.TRUE);
+
+            // 重复 stop() 不许关第二次，而且引用要放开让 GC 能收
+            c.stop();
+            eq("重复 stop() 不会重复 close",
+                    Integer.valueOf(rs.closeCount), Integer.valueOf(1));
+            eq("stop() 之后 socket 引用已清空",
+                    Boolean.valueOf(c.socket == null), Boolean.TRUE);
+        }
+
+        // 换数据源要靠两个数据源都实现 FeedSource，主界面才有统一切换点
+        eq("F1Client 实现了 FeedSource（主界面才能统一切换数据源）",
+                Boolean.valueOf(new F1Client(null) instanceof FeedSource),
+                Boolean.TRUE);
+
+        {
+            final ReplayClient rp = new ReplayClient(new ReplayClient.Opener() {
+                public java.io.InputStream open() throws java.io.IOException {
+                    return new java.io.ByteArrayInputStream(new byte[0]);
+                }
+            }, new F1Client.Listener() {
+                public void onOpen() {
+                }
+
+                public void onFeed(F1Feed f) {
+                }
+
+                public void onError(String message) {
+                }
+
+                public void onClose() {
+                }
+            });
+            eq("ReplayClient 也实现了 FeedSource",
+                    Boolean.valueOf(rp instanceof FeedSource), Boolean.TRUE);
+            // 回放包是本地文件，stop() 只置标志位，不碰网络也不碰 socket
+            long t1 = System.currentTimeMillis();
+            rp.stop();
+            eq("ReplayClient.stop() 不阻塞（" +
+                            (System.currentTimeMillis() - t1) + " ms）",
+                    Boolean.valueOf(System.currentTimeMillis() - t1 < 500),
+                    Boolean.TRUE);
         }
 
         System.out.println("==================================================");

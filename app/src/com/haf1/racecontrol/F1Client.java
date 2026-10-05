@@ -84,7 +84,14 @@ public class F1Client implements FeedSource {
     private final Listener listener;
 
     private volatile boolean closed = false;
-    private volatile Socket socket;
+    /**
+     * 当前连接。
+     *
+     * ★ 包内可见（而不是 private）**只**为了一件事：单测要塞一个假 Socket
+     *   进来，验证 {@link #stop()} 不会在调用线程上 close()。
+     *   见 stop() 的说明 —— 这种崩法在桌面上不会自己暴露，必须有测试钉住。
+     */
+    volatile Socket socket;
     /** negotiate 返回的亲和性 Cookie（AWSALB / AWSALBTG 等）。握手时要带上。 */
     private String affinityCookies = "";
     private InputStream in;
@@ -107,17 +114,53 @@ public class F1Client implements FeedSource {
         return lastError;
     }
 
-    /** 从外部线程调用以中止连接。 */
+    /**
+     * 从外部线程调用以中止连接。**可以随便从主线程调。**
+     *
+     * ★ close() 必须甩到别的线程去做，这是 v3.1.1 修的那个崩溃。
+     *
+     *   Android 的 StrictMode 把「主线程上做网络操作」直接判成
+     *   NetworkOnMainThreadException，而 OpenSSLSocketImpl.close() 也算一个
+     *   —— 它内部要 shutdownAndFreeSslNative()，属于网络动作。
+     *
+     *   于是「在设置页换数据源 -> 返回主界面 -> onResume 里停掉旧连接」
+     *   这条路上，close() 在 resume 阶段抛异常，被包成
+     *   `Unable to resume activity ... NetworkOnMainThreadException`，
+     *   整个界面起不来。栈里只看到 restartClient -> stop，很容易误判成
+     *   "回放功能坏了"，其实是关连接的方式错了。
+     *
+     *   onDestroy() 里那句 stop() 一直有同样的隐患（退出 App 时），
+     *   只是那时 Activity 反正要没了，不容易被发现。
+     *
+     * 关连接**不能**省掉：读循环正阻塞在 read 上，不关就退不出来（要等到
+     * 90 秒读超时）。所以是"换个线程关"，不是"不关"。
+     */
     public void stop() {
         closed = true;
         Socket s = socket;
+        socket = null;              // 重复调用时别关第二次
         if (s != null) {
-            try {
-                s.close();
-            } catch (IOException ignored) {
-                // ignore
-            }
+            closeSocketOffMainThread(s);
         }
+    }
+
+    /**
+     * 在一个短命线程里 close()，这样调用方（可能是主线程）立刻返回。
+     *
+     * 包内可见是为了单测：断言 close 确实发生在**别的**线程上。
+     */
+    static void closeSocketOffMainThread(final Socket s) {
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                try {
+                    s.close();
+                } catch (Throwable ignored) {
+                    // 关不掉也不影响：closed 已置位，读循环自己会退出
+                }
+            }
+        }, "f1-close");
+        t.setDaemon(true);
+        t.start();
     }
 
     /**
@@ -189,6 +232,18 @@ public class F1Client implements FeedSource {
         ssl.startHandshake();          // 显式握手：失败早点冒出来，错误也更清楚
         Socket s = ssl;
         socket = s;
+        // ★ 竞态：stop() 可能刚好在这行之前跑完 —— 那时 socket 还是 null，
+        //   它什么也关不了，这条刚建好的连接就会一直挂到 90 秒读超时。
+        //   这里补一刀。当前是读线程，同步 close 没问题。
+        if (closed) {
+            socket = null;
+            try {
+                s.close();
+            } catch (IOException ignored) {
+                // 反正要走了
+            }
+            throw new IOException("已停止（连接刚建立就被关掉）");
+        }
         in = new BufferedInputStream(s.getInputStream());
         out = new BufferedOutputStream(s.getOutputStream());
 

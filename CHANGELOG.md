@@ -1,5 +1,54 @@
 # 更新日志
 
+## v3.1.1
+
+versionCode 20 -> 21。
+
+### 修：在设置里选回放包、返回主界面那一下就崩
+
+真机栈（用户把 App 弹出的崩溃日志贴过来了）：
+
+```
+Unable to resume activity {com.haf1.racecontrol/F1MainActivity}:
+    android.os.NetworkOnMainThreadException
+Caused by: android.os.NetworkOnMainThreadException
+    at OpenSSLSocketImpl.shutdownAndFreeSslNative(OpenSSLSocketImpl.java:1131)
+    at OpenSSLSocketImpl.close(OpenSSLSocketImpl.java:1126)
+    at F1Client.stop(F1Client.java:116)
+    at F1MainActivity.restartClient(F1MainActivity.java:428)
+    at F1MainActivity.onResume(F1MainActivity.java:675)
+```
+
+**是 v3.1.0 引入的 bug，和回放包本身无关。**
+
+Android 的 StrictMode 把「主线程上做网络操作」直接判成
+`NetworkOnMainThreadException`，而 `OpenSSLSocketImpl.close()` 也算一个 ——
+它内部要 `shutdownAndFreeSslNative()`。
+
+v3.1.0 为了「在设置页换数据源、回主界面自动生效」，
+在 `onResume` 里加了 `restartClient()`，它会 `stop()` 旧连接，
+于是在 resume 阶段抛异常，被包成「无法恢复 Activity」，**整个界面起不来**。
+
+> 同样的 `stop()` 在 `onDestroy()` 里一直有（v3.0.4 也是），
+> 只是那时 Activity 反正要没了，不容易被发现。
+
+修法不是"不关连接" —— 读循环正阻塞在 `read()` 上，不关就要等到 90 秒读超时才退。
+是把 `close()` **甩给一个短命线程**（`f1-close`），`stop()` 立刻返回。
+
+顺带补了一个竞态：`stop()` 可能刚好在"连接建好、还没赋给 `socket` 字段"之间跑完，
+那时它什么也关不了，那条连接会一直挂到读超时。现在 `runOnce()` 建好连接后
+会再查一次 `closed`，是就当场关掉退出（在读线程上，同步关没问题）。
+
+### 为什么桌面测试之前没抓到
+
+**因为桌面 JVM 没有 StrictMode** —— 同样的代码在桌面上跑一万遍也不会红。
+这类"只在 Android 上成立"的约束只能自己造一个假 Socket 去记 `close()`
+是在哪个线程上被调的。新增 9 项断言，其中关键一条就是
+「`close()` 发生在别的线程上」。
+
+这条测试**验证过不是空转的**：把 `stop()` 临时改回旧的同步写法，
+它会精确红在 `close() 发生在别的线程上（main）`，改回来就绿。
+
 ## v3.1.0
 
 versionCode 19 -> 20。
@@ -68,7 +117,9 @@ F1 的旗语消息大量重复（"CLEAR IN TRACK SECTOR 5" 一场里出现好几
   拼出来的消息总数正好 327 条、22 辆车、安全车状态(4) 出现过、
   提醒时间戳改写后能触发告警（133 条）而快照历史消息不会（194 条）。
 - 修了测试输出中文乱码：JVM 不加 `-Dfile.encoding=UTF-8` 会按 GBK 输出。
-- APK 体积 88 KB -> **约 900 KB**，多出来的全是两个回放包（压缩后约 770 KB）。
+- APK 84.7 KB -> **844.9 KB**（865,224 字节），多出来的全是两个回放包
+  （751 KB）。它们仍然只是可选资产：删掉 `app/assets/replay/*.pack.gz`
+  重新构建即可。
 
 ### 为什么把测试数据打进正式 APK
 
