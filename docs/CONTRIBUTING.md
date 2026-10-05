@@ -10,7 +10,7 @@
 
 ```bash
 python tools/fetch_sdk.py              # 首次：下载最小 Android 工具集（约 236 MB）
-python tools/run_tests.py              # 桌面单测（312 项）
+python tools/run_tests.py              # 桌面单测（333 项）
 python tools/build_apk.py              # 构建 APK
 python tools/run_all_tests.py          # 全套测试（单元 + mock 自测 + 端到端 + 发布工具），共 7 项
 python tools/try_feel.py               # 真机手感测试台：按键就往手机推一段剧本
@@ -59,7 +59,32 @@ python tools/release.py --push-only                   # 发完版又补了文档
 
 ## 怎么在没有比赛的时候测
 
-比赛两周才有一次。`tools/mock_ha.py` 是个本地的假 Home Assistant
+比赛两周才有一次。**首选是把回放包放一遍** —— 设置页 ->「回放测试（假数据）」，
+包就在 APK 里，不用网络、不用电脑。它走的是和实时完全同一份解析和渲染代码，
+所以「会不会崩」「面板画得对不对」「提醒响不响」都能当场验。
+
+回放包由 `tools/build_replay_pack.py` 从官方归档生成：
+把每条流按时间戳归并，输出**与线上 WebSocket 逐字节同构**的下发序列
+（`type:3` 快照 + `type:1` 增量，记录间 `0x1e` 分隔）。
+`--snapshot-ms` 决定模拟"什么时候打开 App"，是这个小工具真正的开关。
+
+```bash
+# 先看这一年都有哪些场次（探路脚本在 dsh/tools/probe_archive.py）
+python tools/build_replay_pack.py \
+    --session "2026/2026-09-26_Azerbaijan_Grand_Prix/2026-09-26_Race/" \
+    --id baku2026_race --name "2026 阿塞拜疆站 正赛" --date 2026-09-26 \
+    --snapshot-ms 740000
+```
+
+包是**构建输入，要提交**（`app/assets/replay/*.pack.gz` 各约 400 KB，
+以及给单测用的 `tools/mock_data/*.pack`）。生成过程是确定性的：
+同一份归档重建出来的包字节相同，已用哈希核对过。
+
+> ★ 归档服务器**必须直连**。本机环境变量里有 `HTTP(S)_PROXY`，
+> 而 F1 的 CDN 会把代理出口 403 掉 —— 脚本里已强制绕开代理。
+> 另外归档会在赛后继续吐两三个小时的数据，可以按需裁。
+
+`tools/mock_ha.py` 是个本地的假 Home Assistant
 （REST + WebSocket），可以**回放 697 条真实比赛消息**，也能跑剧本：
 `red_flag` / `safety_car` / `vsc` / `test_double_yellow` / `penalty` /
 `race_start` / `burst`。
@@ -68,8 +93,10 @@ python tools/release.py --push-only                   # 发完版又补了文档
 python tools/mock_ha.py --scenario vsc
 ```
 
-把手机上的地址改成这台电脑的 IP，就能在真机上把闪动、分级、强提醒、确认、
-重连全测一遍。
+它现在**只服务于测试套件和旧的 HA 版界面** —— A 方案不连 HA，
+设置页里也没有填地址的地方了，所以拿它测不了 A 方案的数据链。
+但它的价值还在：**告警逻辑**（聚类、升级、冷却、振动节奏）与数据来源无关，
+用剧本能反复验证（`run_all_tests.py` 就是靠它跑的）。
 
 **剧本里的每条消息都是逐字取自真实数据的完整句子**，不是编的短句 ——
 比如超赛道限制在真实数据里写的是
@@ -91,6 +118,8 @@ python tools/mock_ha.py --scenario vsc
 F1Client.java         直连官方公开流：negotiate -> WebSocket 握手 -> 订阅 -> 自动重连
 F1Feed.java           把增量流深合并成状态（纯逻辑，可单测）
 F1Layout.java         界面几何计算：圆环均布 / 轮胎面板分格 / 旗语栏分段（纯逻辑）
+FeedSource.java       数据源接口：真流 / 回放共用（主界面只有一个分支点）
+ReplayClient.java     放回放包：与线上同构的下发序列 -> F1Feed（纯逻辑，可单测）
 F1MainActivity.java   主界面：横屏左右分栏 + 顶部多旗语栏 + 告警接线
 RightPanelView.java   右侧面板 6 屏：赛道图 / 轮胎进站 / 成绩 / 天气 / 最快圈 / 环节
 TopFlagBarView.java   顶部旗语栏：多旗语并存时纵向分隔，每段列自己的区段
@@ -114,7 +143,7 @@ WsFrame.java          RFC 6455 帧编解码（含分片重组 readMessage）
 Notifier.java         声音 + 震动 + 通知栏
 AlertActivity.java    强提醒的全屏横幅
 CheckerDrawable.java  格子旗的棋盘格背景
-SettingsActivity.java 设置：数据源 / 显示与过滤 / 提醒 / 试听 / 关于
+SettingsActivity.java 设置：回放测试 / 数据源 / 显示与过滤 / 提醒 / 试听 / 关于
 Prefs.java            设置项的读写、钳制与过滤规则
 ```
 
@@ -138,6 +167,7 @@ run_e2e.py            端到端：真实客户端代码 <=> 假 HA
 test_mock_ha.py       假 HA 自测
 test_release_meta.py  发布工具自测
 mock_ha.py            本地假 HA（REST + WebSocket），回放真实数据 / 跑剧本
+build_replay_pack.py  从官方归档造回放包（app/assets/replay/ + tools/mock_data/）
 try_feel.py           真机手感测试台
 fetch_sdk.py          下载 Android 工具集（约 236 MB）
 make_icon.py          生成图标
@@ -154,7 +184,13 @@ mock_data/racecontrol_history.tsv            697 条真实比赛消息（HA 录�
 mock_data/racecontrol_history_0924_0926.tsv  另一个比赛周末的消息
 mock_data/f1_snapshot_real.json              官方归档真实快照
                                              （某站正赛：327 条消息 / 22 位车手）
+mock_data/bahrain2026_race.pack              回放包：整场时间线，从头看（3350 帧）
+mock_data/bahrain2026_race_mid.pack          回放包：中途接入（2460 帧，快照 194 条消息）
 ```
+
+`.pack` 是**没压缩**的那一份，给桌面单测用；APK 里放的是
+`app/assets/replay/*.pack.gz`（同样的内容，gzip 后约 400 KB）。
+两份都由 `tools/build_replay_pack.py` 生成，**不要手工编辑**。
 
 `mock_data/f1_snapshot_real.json` 是**官方归档的真实形状**，不是手写的 ——
 `Stints` 那个 bug（真实数据里是数组、代码按对象解析）就是手写夹具发现不了的，

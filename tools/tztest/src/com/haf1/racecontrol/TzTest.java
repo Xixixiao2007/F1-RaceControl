@@ -1302,6 +1302,146 @@ public class TzTest {
 
 
 
+        // ================================================================
+        // 回放包：把官方归档重新"播"一遍
+        // ================================================================
+        // 这一段是"假数据测试"的地基。它和上面那个 fixture 测试的分工：
+        //   fixture 只喂**一份最终快照**，验证的是"解析对不对"；
+        //   这里喂的是**完整时间线**（快照 + 几千条增量），验证的是
+        //   "从连上到比赛结束，整条管线会不会中途炸掉"。
+        section("ReplayClient：真回放包走完整管线");
+        String pack = System.getProperty("f1.pack", "");
+        eq("回放包存在（tools/mock_data/*.pack）",
+                Boolean.valueOf(pack.length() > 0
+                        && new java.io.File(pack).isFile()), Boolean.TRUE);
+
+        if (pack.length() > 0 && new java.io.File(pack).isFile()) {
+            // ---- 自己先扫一遍包：帧数、时长、快照点 ----
+            java.util.List<String> packFrames = new java.util.ArrayList<String>();
+            java.io.BufferedReader pbr = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(
+                            new java.io.FileInputStream(pack), "UTF-8"), 1 << 16);
+            String pln;
+            while ((pln = pbr.readLine()) != null) {
+                pln = pln.trim();
+                if (pln.length() > 0) {
+                    packFrames.add(pln);
+                }
+            }
+            pbr.close();
+
+            eq("包里有上千帧", Boolean.valueOf(packFrames.size() > 1000),
+                    Boolean.TRUE);
+            final String firstFrame = packFrames.get(0);
+            String lastFrame = packFrames.get(packFrames.size() - 1);
+            long packSnapMs = ReplayClient.parseOffset(firstFrame.substring(0, 12));
+            long packLastMs = ReplayClient.parseOffset(lastFrame.substring(0, 12));
+            eq("首帧是 type:3 快照", Boolean.valueOf(
+                    firstFrame.indexOf("\"type\":3") > 0), Boolean.TRUE);
+            eq("快照带的是真实会话偏移（不是 0）",
+                    Boolean.valueOf(packSnapMs > 600000), Boolean.TRUE);
+            eq("包跨越一段时间",
+                    Boolean.valueOf(packLastMs - packSnapMs > 3600000), Boolean.TRUE);
+            eq("每条增量都带 target", Boolean.valueOf(
+                    lastFrame.indexOf("\"target\":") > 0), Boolean.TRUE);
+
+            // ---- 真的放一遍。speed 开到极大 = 不等，几毫秒放完 ----
+            final int[] opens = new int[1];
+            final int[] feeds = new int[1];
+            final int[] errors = new int[1];
+            final F1Feed[] seen = new F1Feed[1];
+            final java.util.TreeSet<String> codes = new java.util.TreeSet<String>();
+            ReplayClient rp = new ReplayClient(new ReplayClient.Opener() {
+                public java.io.InputStream open() throws java.io.IOException {
+                    return new java.io.FileInputStream(pack);
+                }
+            }, new F1Client.Listener() {
+                public void onOpen() {
+                    opens[0]++;
+                }
+
+                public void onFeed(F1Feed f) {
+                    feeds[0]++;
+                    seen[0] = f;
+                    codes.add(f.trackStatusCode());
+                }
+
+                public void onError(String message) {
+                    errors[0]++;
+                    System.out.println("      回放报错: " + message);
+                }
+
+                public void onClose() {
+                }
+            }, 1000000, packLastMs - packSnapMs, 0);
+            rp.runForever();
+
+            eq("回放没有报错", Integer.valueOf(errors[0]), Integer.valueOf(0));
+            eq("回调了 onOpen", Integer.valueOf(opens[0]), Integer.valueOf(1));
+            eq("回调了 onFeed", Boolean.valueOf(feeds[0] > 0), Boolean.TRUE);
+            eq("进度收到 100%", Integer.valueOf(rp.percent()), Integer.valueOf(100));
+            eq("lastError 为空", rp.lastError(), "");
+
+            final F1Feed rpf = seen[0];
+            eq("回放末态拿到了 feed",
+                    Boolean.valueOf(rpf != null), Boolean.TRUE);
+
+            if (rpf != null) {
+                // ★ 327 是这场比赛的**全部**消息数（快照 194 + 之后的增量）。
+                //   对得上就说明：快照合并、增量拼接、去重，都对了。
+                eq("消息累计 327 条（快照 194 + 增量）",
+                        Integer.valueOf(rpf.messages.size()), Integer.valueOf(327));
+                eq("车手 22 位", Integer.valueOf(rpf.cars().size()),
+                        Integer.valueOf(22));
+                eq("区段数 > 0", Boolean.valueOf(rpf.sectorCount() > 0),
+                        Boolean.TRUE);
+                eq("会议名含 Bahrain", Boolean.valueOf(
+                        rpf.meetingName().indexOf("Bahrain") >= 0), Boolean.TRUE);
+
+                // ★ 这两条就是"漏订阅 TimingStats / TopThree"那个 bug 的哨兵。
+                //   以前两个都必然是 0，而实况下"面板空着"和"这节还没成绩"
+                //   长得一模一样，肉眼发现不了。
+                int rpBest = 0;
+                java.util.List<F1Feed.Car> rpc = rpf.cars();
+                for (int i = 0; i < rpc.size(); i++) {
+                    if (rpc.get(i).bestLap != null
+                            && rpc.get(i).bestLap.length() > 0) {
+                        rpBest++;
+                    }
+                }
+                eq("至少 15 位车手有最快圈（靠 TimingStats 流）",
+                        Boolean.valueOf(rpBest >= 15), Boolean.TRUE);
+                eq("前三名非空（靠 TopThree 流）",
+                        Boolean.valueOf(rpf.topThree().size() > 0), Boolean.TRUE);
+
+                // 回放要能压到安全车那一档，否则说明抽稀把
+                // TrackStatus 的关键状态吃掉了
+                eq("TrackStatus 出现过安全车(4)",
+                        Boolean.valueOf(codes.contains("4")), Boolean.TRUE);
+
+                // ---- 告警时间戳改写 ----
+                // 快照里的历史消息必须**仍然很旧**（否则一开机就炸几十条全屏告警），
+                // 增量里的消息必须**是现在**（否则提醒一次都不会响，等于没测）。
+                long nowMs = System.currentTimeMillis();
+                int rpFresh = 0;
+                int rpStale = 0;
+                java.util.List<RaceMessage> rpl = rpf.messages.sortedDesc();
+                for (int i = 0; i < rpl.size(); i++) {
+                    RaceMessage m = rpl.get(i);
+                    if (m.time > 0 && nowMs - m.time <= 3 * 60 * 1000L) {
+                        rpFresh++;
+                    } else {
+                        rpStale++;
+                    }
+                }
+                eq("增量消息被改写成'现在'，能触发告警（" + rpFresh + " 条）",
+                        Boolean.valueOf(rpFresh >= 100), Boolean.TRUE);
+                eq("快照历史消息仍然很旧，不会一开机就告警（"
+                                + rpStale + " 条）",
+                        Boolean.valueOf(rpStale >= 180), Boolean.TRUE);
+            }
+        }
+
         System.out.println("==================================================");
         System.out.println("  通过 " + pass + " 项，失败 " + fail + " 项");
         System.out.println("==================================================");

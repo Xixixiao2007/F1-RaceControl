@@ -35,6 +35,9 @@ tools/tztest/smoke.args
 tools/tztest/pipeline.args
 # 上次发布的记录（版本号守卫用），是本机状态不该提交
 tools/.release-state.json
+# 官方归档的下载缓存（重建回放包时用，一次要拉 30 MB）
+# 回放包本身是要提交的：它是构建输入，见 tools/build_replay_pack.py
+tools/.archive-cache/
 
 # Python
 __pycache__/

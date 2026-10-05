@@ -51,6 +51,21 @@ public class SettingsActivity extends Activity {
     private Spinner dySpinner;
     private TextView testResult;
 
+    /** 回放测试用的两个下拉框（第一个选项永远是"官方流"）。 */
+    private Spinner replaySpinner;
+    private Spinner speedSpinner;
+    private java.util.List<ReplayClient.Pack> replayPacks =
+            new java.util.ArrayList<ReplayClient.Pack>();
+
+    private static final int[] SPEEDS = {10, 30, 60, 120, 300};
+    private static final String[] SPEED_LABELS = {
+            "10 倍速（4 小时要看 24 分钟）",
+            "30 倍速（4 小时看 8 分钟）",
+            "60 倍速（4 小时看 4 分钟，推荐）",
+            "120 倍速（4 小时看 2 分钟）",
+            "300 倍速（4 小时看 48 秒，只适合看会不会崩）",
+    };
+
     private static final String[] DY_LABELS = {
             "双黄旗：只闪动，不提醒",
             "双黄旗：只轻提醒（不升级）",
@@ -93,6 +108,83 @@ public class SettingsActivity extends Activity {
         testResult.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         testResult.setPadding(0, dp(6), 0, dp(10));
         root.addView(testResult);
+
+        header(root, "回放测试（假数据）");
+        // 存在的意义：真机上的崩溃只在真实比赛数据下出现，而一年只有二十几场，
+        // 崩了就得再等一周，还不能复现。回放包是官方归档里的一场真实比赛
+        // （快照 + 每条增量都在），格式和线上收到的一模一样 —— 于是
+        // "等下一场"就变成"随时重放昨天那场"。
+        label(root, "用官方归档里的一场真实比赛来跑界面，不需要比赛、不需要网络。",
+                "包里是一条完整时间线：接上时先给一份完整快照"
+                        + "（和真的连上去时一样，几百条历史消息 + 22 辆车），"
+                        + "之后逐条放增量。走的解析和渲染代码与实时完全一致。"
+                        + "放出来的增量消息时间会被改成「现在」，所以提醒、闪动、"
+                        + "全屏横幅都会真的触发；快照里的历史消息仍然是旧的，"
+                        + "不会被当成新消息炸你一屏。");
+
+        replayPacks = loadPacks();
+        java.util.List<String> packLabels = new java.util.ArrayList<String>();
+        packLabels.add("官方流（正常使用，实时数据）");
+        for (int i = 0; i < replayPacks.size(); i++) {
+            packLabels.add(replayPacks.get(i).label());
+        }
+
+        replaySpinner = new Spinner(this);
+        ArrayAdapter<String> packAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, packLabels);
+        packAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        replaySpinner.setAdapter(packAdapter);
+        replaySpinner.setSelection(indexOfPack(p.replayPack));
+        root.addView(replaySpinner);
+
+        // 选到哪个包，下面就把它的底细写出来
+        final TextView packDetail = new TextView(this);
+        packDetail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        packDetail.setTextColor(0xFF78909C);
+        packDetail.setPadding(0, dp(4), 0, dp(8));
+        root.addView(packDetail);
+
+        final Runnable showDetail = new Runnable() {
+            public void run() {
+                int sel = replaySpinner.getSelectedItemPosition();
+                if (sel <= 0 || sel - 1 >= replayPacks.size()) {
+                    packDetail.setText("当前模式：连 F1 官方公开流（实时）。"
+                            + "比赛开始时用这个。");
+                    return;
+                }
+                ReplayClient.Pack pk = replayPacks.get(sel - 1);
+                packDetail.setText("当前模式：回放。" + pk.detail());
+            }
+        };
+        replaySpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(AdapterView<?> parent, View view,
+                                       int position, long id) {
+                showDetail.run();
+            }
+
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
+        showDetail.run();
+
+        TextView speedLabel = new TextView(this);
+        speedLabel.setText("回放倍速");
+        speedLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        speedLabel.setPadding(0, dp(8), 0, dp(4));
+        root.addView(speedLabel);
+
+        speedSpinner = new Spinner(this);
+        ArrayAdapter<String> speedAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_item, SPEED_LABELS);
+        speedAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        speedSpinner.setAdapter(speedAdapter);
+        speedSpinner.setSelection(speedIndex(p.replaySpeed));
+        root.addView(speedSpinner);
+
+        label(root, "回放只放一遍就停，不会循环，也不会去连网络。"
+                        + "想回到正常使用，把上面那项选回「官方流」再保存即可。",
+                "这些包是构建时打进 APK 的（两个包合计约 860 KB），"
+                        + "不占手机存储、不用下载。");
 
         header(root, "显示与过滤");
 
@@ -378,6 +470,9 @@ public class SettingsActivity extends Activity {
         p.dyMode = Prefs.clamp(dySpinner.getSelectedItemPosition(), 0, 3);
         p.dyEscalateSec = Prefs.clamp(parse(dySecondsBox.getText().toString(), 15), 1, 120);
 
+        p.replayPack = chosenPack();
+        p.replaySpeed = chosenSpeed();
+
         autoStopBox.setText(String.valueOf(p.alarmAutoStopSec));
         cooldownBox.setText(String.valueOf(p.cooldownSec));
         dySecondsBox.setText(String.valueOf(p.dyEscalateSec));
@@ -401,6 +496,72 @@ public class SettingsActivity extends Activity {
         cooldownBox.setText(String.valueOf(p.cooldownSec));
         dySpinner.setSelection(Prefs.clamp(p.dyMode, 0, 3));
         dySecondsBox.setText(String.valueOf(p.dyEscalateSec));
+        if (replaySpinner != null) {
+            replaySpinner.setSelection(indexOfPack(p.replayPack));
+        }
+        if (speedSpinner != null) {
+            speedSpinner.setSelection(speedIndex(p.replaySpeed));
+        }
+    }
+
+    /** assets/replay/index.json 里的包清单。读不到就当作没有回放包。 */
+    private java.util.List<ReplayClient.Pack> loadPacks() {
+        java.io.InputStream in = null;
+        try {
+            in = getAssets().open("replay/index.json");
+            return ReplayClient.readIndex(in);
+        } catch (Throwable t) {
+            return new java.util.ArrayList<ReplayClient.Pack>();
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (java.io.IOException ignored) {
+                    // 关不掉不值得报
+                }
+            }
+        }
+    }
+
+    /** 第 0 项是"官方流"，所以包在列表里的位置要 +1。 */
+    private int indexOfPack(String packId) {
+        if (packId == null || packId.length() == 0) {
+            return 0;
+        }
+        for (int i = 0; i < replayPacks.size(); i++) {
+            if (replayPacks.get(i).id.equals(packId)) {
+                return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    private static int speedIndex(int speed) {
+        for (int i = 0; i < SPEEDS.length; i++) {
+            if (SPEEDS[i] == speed) {
+                return i;
+            }
+        }
+        return 2;                       // 默认识别不出来的话给 60 倍速
+    }
+
+    private int chosenSpeed() {
+        int i = speedSpinner == null ? 2 : speedSpinner.getSelectedItemPosition();
+        if (i < 0 || i >= SPEEDS.length) {
+            i = 2;
+        }
+        return SPEEDS[i];
+    }
+
+    private String chosenPack() {
+        if (replaySpinner == null) {
+            return "";
+        }
+        int sel = replaySpinner.getSelectedItemPosition();
+        if (sel <= 0 || sel - 1 >= replayPacks.size()) {
+            return "";
+        }
+        return replayPacks.get(sel - 1).id;
     }
 
     /** 测试官方流是否可达。只做一次握手，不建长连接。 */

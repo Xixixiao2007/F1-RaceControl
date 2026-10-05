@@ -172,6 +172,28 @@ FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS – ESCAPE ROAD INSTRUCTIONS (14:2
 
 ---
 
+### 不回放不比赛？直接放一遍真实比赛
+
+**设置页 ->「回放测试（假数据）」** 就能把界面完整跑一遍，
+不用等比赛、不用网络、不用电脑 —— 包就在 APK 里。
+
+包里是官方归档的**一整场真实比赛**（2026 巴林站正赛，10 月 4 日），
+格式与线上 WebSocket **逐字节同构**：先一条 `type:3` 完整快照，
+之后逐条 `type:1` 增量，记录之间同样是 `0x1e` 分隔。
+所以解析和渲染走的是和实时**完全同一份代码**。
+
+两个包，区别在「接上时那一刻」：
+
+| 包 | 接上时 | 模拟的场景 |
+| --- | --- | --- |
+| 从头看 | 只有 1 条消息 | 比赛刚开始就打开 App，看着旗语栏逐步长出来 |
+| 中途接入 | **194 条消息 + 22 辆车全字段** | 比赛过半才打开 App —— 也就是真机上最容易崩的那种负载 |
+
+倍速 10 / 30 / 60 / 120 / 300，60 倍下一整场 4 小时只要 4 分钟。
+放出来的消息时间会被改成「现在」，所以提醒、闪动、全屏横幅都会真的触发。
+
+---
+
 ## 安装
 
 1. 从 [Releases](../../releases) 下载 APK，拷到手机，开启「未知来源」后安装
@@ -193,10 +215,17 @@ FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS – ESCAPE ROAD INSTRUCTIONS (14:2
 2. **大消息会分片。** 初始快照几十 KB，服务端按 FIN/续帧拆开，必须重组
    （`WsFrame.readMessage`），否则只会拿到半截 JSON。
 
-还有一个数据形状上的坑：`Stints`（轮胎套数）和 `Messages` 在真实数据里
-**list 和 dict 两种形状都会出现**。手写的测试夹具发现不了这个 ——
-仓库里的 `tools/mock_data/f1_snapshot_real.json` 是**官方归档的真实快照**，
-就是它把这类问题抓出来的。
+还有一个数据形状上的坑，同一种错犯了三次：`Stints`（轮胎套数）、`Messages`、
+`TopThree.Lines` 在真实数据里**list 和 dict 两种形状都会出现**，
+方向还不固定。手写的测试夹具发现不了这个 —— 仓库里的
+`tools/mock_data/f1_snapshot_real.json` 是**官方归档的真实快照**，
+`tools/mock_data/bahrain2026_race_mid.pack` 是**整场时间线**，
+就是它们把这类问题抓出来的（`TopThree` 那次连"面板空着是因为没订流、
+还是因为形状读错"都分得清）。
+
+> 顺带一个教训：README 这张数据来源表**早就写了** `TimingStats` 和 `TopThree`，
+> 但 `F1Feed.STREAMS` 里其实没订这两条流 —— 文档比代码诚实。
+> 现在两边的对账是单测里钉住的。
 
 ---
 

@@ -48,6 +48,12 @@ public class F1Feed {
             "RaceControlMessages", "TrackStatus", "SessionStatus", "SessionInfo",
             "LapCount", "DriverList", "TimingData", "TimingAppData",
             "ExtrapolatedClock", "WeatherData",
+            // ★ 这两条是补上的，以前漏了 —— 后果是"最快圈面板"和"前三名"永远是空的：
+            //   cars() 的 bestLap 只从 TimingStats 取（见下面 bestLap 那段），
+            //   topThree() 只从 TopThree 取。没订这两个流，面板就一直空着，
+            //   而实况下"面板是空的"和"这节比赛还没跑出成绩"长得一模一样，
+            //   所以肉眼根本发现不了。是拿归档流名跟订阅列表逐条对照才揪出来的。
+            "TimingStats", "TopThree",
     };
 
     /** 区段旗语状态机（用户要求：双黄收到普通黄旗 = 降级为单黄）。 */
@@ -558,26 +564,70 @@ public class F1Feed {
     }
 
     /**
-     * 前三名 + 圈速，一行一个人（TopThree 流；赛后才稳，比赛中途可能为空）。
+     * 前三名 + 圈速，一行一个人（TopThree 流）。
+     *
+     * <p>★ `Lines` 有**两种形状**，而且真实数据里默认给的是后者：
+     * <pre>
+     *   [ {"Position":"1","Tla":"VER","LapTime":"1:38.220"}, … ]     数组
+     *   { "0": {"Tla":"VER","LapTime":"1:38.220"}, "1": {…} }        以名次为键的对象
+     * </pre>
+     * 原来只认数组（`optJSONArray`），对着对象直接返回 null，于是
+     * **前三名一直是空的** —— 和 `Stints` 是同一类坑，而且更难发现：
+     * "面板空着"和"这节比赛还没跑到"长得一模一样。
      */
     public synchronized java.util.List<String> topThree() {
         java.util.List<String> out = new java.util.ArrayList<String>();
         JSONObject tt = state.optJSONObject("TopThree");
-        JSONArray lines = tt == null ? null : tt.optJSONArray("Lines");
-        if (lines == null) {
+        if (tt == null) {
             return out;
         }
-        for (int i = 0; i < lines.length(); i++) {
-            JSONObject o = lines.optJSONObject(i);
-            if (o == null) {
-                continue;
+        JSONArray lines = tt.optJSONArray("Lines");
+        if (lines != null) {
+            for (int i = 0; i < lines.length(); i++) {
+                JSONObject o = lines.optJSONObject(i);
+                if (o != null) {
+                    out.add(topLine(o, o.optString("Position", "?")));
+                }
             }
-            String tla = o.optString("Tla", o.optString("BroadcastName", ""));
-            String lap = o.optString("LapTime", "");
-            out.add("P" + o.optString("Position", "?") + " " + tla
-                    + (lap.length() > 0 ? "  " + lap : ""));
+            return out;
+        }
+        JSONObject map = tt.optJSONObject("Lines");
+        if (map != null) {
+            // 键就是名次（"0" = P1），按数值排一遍，别靠字典序
+            java.util.TreeMap<Integer, JSONObject> sorted =
+                    new java.util.TreeMap<Integer, JSONObject>();
+            Iterator<String> it = map.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                JSONObject o = map.optJSONObject(k);
+                if (o == null) {
+                    continue;
+                }
+                int pos = 0;
+                try {
+                    pos = Integer.parseInt(k.trim());
+                } catch (Exception ignored) {
+                    pos = 0;                 // 不是数字就都排到最前面，至少不丢
+                }
+                sorted.put(Integer.valueOf(pos), o);
+            }
+            Iterator<Integer> si = sorted.keySet().iterator();
+            while (si.hasNext()) {
+                Integer k = si.next();
+                out.add(topLine(sorted.get(k),
+                        String.valueOf(k.intValue() + 1)));
+            }
         }
         return out;
+    }
+
+    /** 前三名里的一行。"P1 VER  1:38.220"。 */
+    private static String topLine(JSONObject o, String pos) {
+        String p = pos == null || pos.length() == 0
+                ? o.optString("Position", "?") : pos;
+        String tla = o.optString("Tla", o.optString("BroadcastName", ""));
+        String lap = o.optString("LapTime", "");
+        return "P" + p + " " + tla + (lap.length() > 0 ? "  " + lap : "");
     }
 
     /** 天气一行字：气温 / 赛道温 / 湿度 / 风 / 降雨。 */

@@ -57,6 +57,12 @@ TESTED_SOURCES = (
     "WsFrame.java",       # RFC6455 帧编解码
     "F1Feed.java",        # F1 官方流的增量合并（A 方案）
     "F1Layout.java",      # 界面几何计算（圆环 / 轮胎面板 / 旗语栏）
+    "FeedSource.java",    # 数据源接口（真流 / 回放）
+    "ReplayClient.java",  # 回放包播放（假数据测试的地基；不依赖 android.*）
+    # F1Client 也拉进来编译：回放客户端要复用它的 Listener 接口，
+    # 而且它本身是纯逻辑 + javax.net.ssl，桌面 JVM 编得过。
+    # （真正连出去的 testConnectivity() 测试里从不调用。）
+    "F1Client.java",
 )
 
 
@@ -112,8 +118,15 @@ def main():
     print()
     # F1Feed 的真实快照夹具（官方归档生成）。
     fixture = os.path.join(HERE, "mock_data", "f1_snapshot_real.json")
-    p = subprocess.run([java, "-Df1.fixture=" + fixture, "-cp", OUT,
-                        "com.haf1.racecontrol.TzTest"],
+    # 回放包（官方归档生成的完整时间线）。挑**中途接入**那一份 ——
+    # 它的快照里有 194 条消息和 22 辆车，是真正会让真机崩掉的那种负载。
+    pack = os.path.join(HERE, "mock_data", "bahrain2026_race_mid.pack")
+    # ★ -Dfile.encoding=UTF-8 不能省：不放的话 JVM 按 Windows 默认代码页（GBK）
+    #   输出中文，父进程按 UTF-8 读，报告直接变乱码 —— 断言数是 ASCII 还能看，
+    #   中文标签就全废了。
+    p = subprocess.run([java, "-Dfile.encoding=UTF-8",
+                        "-Df1.fixture=" + fixture, "-Df1.pack=" + pack,
+                        "-cp", OUT, "com.haf1.racecontrol.TzTest"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        universal_newlines=True, encoding="utf-8", errors="replace")
     sys.stdout.write(p.stdout)

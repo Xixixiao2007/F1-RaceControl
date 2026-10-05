@@ -1,0 +1,34 @@
+[
+  {
+    "id": "bahrain2026_race_mid",
+    "name": "2026 巴林站 正赛 · 中途接入",
+    "date": "2026-10-04",
+    "session": "2026/2026-10-04_Bahrain_Grand_Prix/2026-10-04_Race/",
+    "file": "bahrain2026_race_mid.pack.gz",
+    "snapshotMs": 9600000,
+    "startMs": 9600000,
+    "endMs": 15538186,
+    "frames": 2460,
+    "bytes": 353059,
+    "rawBytes": 3561261,
+    "snapshotMsgs": 194,
+    "durationMs": 5938186,
+    "note": "模拟比赛过半时打开 App：一发就是完整体快照，紧接着是撞车+安全车"
+  },
+  {
+    "id": "bahrain2026_race",
+    "name": "2026 巴林站 正赛 · 从头看",
+    "date": "2026-10-04",
+    "session": "2026/2026-10-04_Bahrain_Grand_Prix/2026-10-04_Race/",
+    "file": "bahrain2026_race.pack.gz",
+    "snapshotMs": 740000,
+    "startMs": 740000,
+    "endMs": 15538186,
+    "frames": 3350,
+    "bytes": 416088,
+    "rawBytes": 4257974,
+    "snapshotMsgs": 1,
+    "durationMs": 14798186,
+    "note": "从第一发赛事控制消息开始，能看到旗语栏逐步长出来"
+  }
+]

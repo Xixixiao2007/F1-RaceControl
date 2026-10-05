@@ -53,7 +53,7 @@ import javax.net.ssl.SSLSocketFactory;
  * 只有"TCP + HTTP Upgrade + RFC6455 帧"这三层相同，所以帧编解码复用
  * {@link WsFrame}，其余另写。记录之间用 0x1e（RS）分隔。
  */
-public class F1Client {
+public class F1Client implements FeedSource {
 
     public static final String HOST = "livetiming.formula1.com";
     public static final String NEGOTIATE_URL =

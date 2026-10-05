@@ -7,3 +7,9 @@
 *.jar binary
 *.keystore binary
 *.idsig binary
+
+# 回放包：机器生成、要按字节核对哈希，绝不能碰换行。
+# .pack.gz 本来就是 gzip；.pack 虽然行结构是文本，
+# 但它是构建输入，改一个字节就和生成器对不上了。
+*.pack binary
+*.pack.gz binary

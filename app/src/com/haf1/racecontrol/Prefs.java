@@ -100,6 +100,17 @@ public class Prefs {
     /** 本地最多保留多少条消息。 */
     public int maxStored = 500;
 
+    /**
+     * 回放包 id。空 = 连官方流（正常模式）。
+     *
+     * 用官方归档压成的「回放包」当数据源，不需要比赛、不需要网络。
+     * 见 {@link ReplayClient} 与 tools/build_replay_pack.py。
+     */
+    public String replayPack = "";
+
+    /** 回放倍速。整场 4 小时，60 倍速就是 4 分钟。 */
+    public int replaySpeed = 60;
+
     // ------------------------------------------------------------------
 
     public static Prefs load(Context c) {
@@ -134,6 +145,8 @@ public class Prefs {
 
         p.connectionWarnSec = clamp(sp.getInt("connwarn", 45), 10, 600);
         p.maxStored = clamp(sp.getInt("maxstored", 500), 50, 5000);
+        p.replayPack = sp.getString("replay_pack", "");
+        p.replaySpeed = clamp(sp.getInt("replay_speed", 60), 1, 600);
         return p;
     }
 
@@ -165,6 +178,8 @@ public class Prefs {
                 .putString("exclude", joinLines(excludeKeywords))
                 .putInt("connwarn", connectionWarnSec)
                 .putInt("maxstored", maxStored)
+                .putString("replay_pack", replayPack == null ? "" : replayPack)
+                .putInt("replay_speed", clamp(replaySpeed, 1, 600))
                 .apply();
     }
 

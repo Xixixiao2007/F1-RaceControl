@@ -53,8 +53,13 @@ public class F1MainActivity extends Activity {
     private Notifier notifier;
     private final AlertGate gate = new AlertGate();
 
-    private F1Client client;
+    private FeedSource client;
     private F1Feed feed;
+
+    /** 当前数据源的标识。回放包被换掉时要重启采集线程，靠它比较。 */
+    private String runningSource = null;
+    /** 当前是不是在放回放包（真数据 vs 假数据）。 */
+    private boolean replaying = false;
 
     private TopFlagBarView flagBar;
     private RightPanelView panel;
@@ -306,10 +311,18 @@ public class F1MainActivity extends Activity {
     // ------------------------------------------------------------------
 
     private void startClient() {
-        client = new F1Client(new F1Client.Listener() {
+        if (prefs == null) {
+            prefs = Prefs.load(this);
+        }
+        final String wantPack = prefs.replayPack == null ? "" : prefs.replayPack;
+        final int speed = prefs.replaySpeed;
+        replaying = wantPack.length() > 0;
+        runningSource = sourceKey(wantPack, speed);
+
+        F1Client.Listener listener = new F1Client.Listener() {
             public void onOpen() {
                 opened = true;
-                stage = "已连上官方流，等数据…";
+                stage = replaying ? "回放数据已开始" : "已连上官方流，等数据…";
                 ui.post(new Runnable() {
                     public void run() {
                         startedAt = System.currentTimeMillis();
@@ -328,7 +341,7 @@ public class F1MainActivity extends Activity {
 
             public void onError(final String message) {
                 lastErr = message == null ? "" : message;
-                stage = "连接出错，即将重试";
+                stage = replaying ? "回放出错" : "连接出错，即将重试";
                 ui.post(new Runnable() {
                     public void run() {
                         updateStatus();
@@ -338,7 +351,10 @@ public class F1MainActivity extends Activity {
 
             public void onClose() {
                 opened = false;
-                if (!stage.startsWith("连接出错")) {
+                if (replaying) {
+                    // 回放放完就结束，不重连（真数据才需要断开重连）
+                    stage = "回放已放完";
+                } else if (!stage.startsWith("连接出错")) {
                     stage = "连接已断开，即将重试";
                 }
                 ui.post(new Runnable() {
@@ -347,7 +363,24 @@ public class F1MainActivity extends Activity {
                     }
                 });
             }
-        });
+        };
+
+        if (replaying) {
+            final String pid = wantPack;
+            // ★ 包是 gzip 的（原始 4 MB，压完 400 多 KB）。
+            //   asset 里放的就是 .pack.gz，这里要套一层 GZIPInputStream。
+            client = new ReplayClient(new ReplayClient.Opener() {
+                public java.io.InputStream open() throws java.io.IOException {
+                    return new java.util.zip.GZIPInputStream(
+                            getAssets().open("replay/" + pid + ".pack.gz"));
+                }
+            }, listener, speed, packSpanMs(pid));
+            stage = "回放：" + packName(pid);
+        } else {
+            client = new F1Client(listener);
+            stage = "正在连官方流…";
+        }
+
         feed = client.feed();
         feed.setListener(new F1Feed.Listener() {
             public void onRaceMessage(final RaceMessage m) {
@@ -370,9 +403,77 @@ public class F1MainActivity extends Activity {
             public void run() {
                 client.runForever();
             }
-        }, "f1-live");
+        }, replaying ? "f1-replay" : "f1-live");
         t.setDaemon(true);
         t.start();
+        updateStatus();
+    }
+
+    /** 数据源标识。回放换包或换倍速都要重启采集线程，用它比较。 */
+    private static String sourceKey(String pack, int speed) {
+        return pack == null || pack.length() == 0 ? "live"
+                : "replay:" + pack + ":" + speed;
+    }
+
+    /** 换数据源：先停掉旧的，再按新配置起来。 */
+    private void restartClient() {
+        FeedSource old = client;
+        if (old != null) {
+            // 先把监听摘掉，否则旧线程收尾时还会往界面上刷一次
+            try {
+                old.feed().setListener(null);
+            } catch (Throwable ignored) {
+                // 摘不掉也不影响停止
+            }
+            old.stop();
+        }
+        client = null;
+        feed = null;
+        opened = false;
+        lastErr = "";
+        lastCount = -1;
+        startClient();
+        refreshList();
+        refreshUi(false);
+    }
+
+    /** assets/replay/index.json 里的包清单。读不到就返回空表。 */
+    private java.util.List<ReplayClient.Pack> packs() {
+        java.io.InputStream in = null;
+        try {
+            in = getAssets().open("replay/index.json");
+            return ReplayClient.readIndex(in);
+        } catch (Throwable t) {
+            return new java.util.ArrayList<ReplayClient.Pack>();
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (java.io.IOException ignored) {
+                    // 关不掉不值得报
+                }
+            }
+        }
+    }
+
+    private String packName(String id) {
+        java.util.List<ReplayClient.Pack> ps = packs();
+        for (int i = 0; i < ps.size(); i++) {
+            if (ps.get(i).id.equals(id)) {
+                return ps.get(i).name;
+            }
+        }
+        return id;
+    }
+
+    private long packSpanMs(String id) {
+        java.util.List<ReplayClient.Pack> ps = packs();
+        for (int i = 0; i < ps.size(); i++) {
+            if (ps.get(i).id.equals(id)) {
+                return ps.get(i).durationMs;
+            }
+        }
+        return 0L;
     }
 
     /** 新消息：告警 + 列表 + 旗语栏。 */
@@ -490,7 +591,9 @@ public class F1MainActivity extends Activity {
         StringBuilder b = new StringBuilder();
         int n = feed == null ? 0 : feed.messages.size();
         if (n > 0) {
-            b.append("⏱ 实时");
+            // 回放和实时必须一眼区分开 —— 否则拿着几个月前的数据
+            // 还以为比赛正在进行。
+            b.append(replaying ? "▶ 回放" : "⏱ 实时");
         } else {
             b.append("… ").append(stage);
         }
@@ -506,6 +609,13 @@ public class F1MainActivity extends Activity {
             if (lap > 0) {
                 b.append("  第 ").append(lap).append('/')
                         .append(feed.totalLaps()).append(" 圈");
+            }
+            if (client instanceof ReplayClient) {
+                ReplayClient rp = (ReplayClient) client;
+                b.append("  ").append(rp.speed()).append("×");
+                if (rp.percent() > 0 && rp.percent() < 100) {
+                    b.append("  ").append(rp.percent()).append('%');
+                }
             }
         }
         String e = lastErr;
@@ -557,6 +667,12 @@ public class F1MainActivity extends Activity {
         // 否则改了设置回到主界面看不到变化，会以为设置没生效。
         if (!userToggledFilter) {
             onlyImportant = prefs.noiseFilterEnabled;
+        }
+        // 从设置页回来时数据源可能被换了（切回放 / 换包 / 换倍速）。
+        // 不重启的话界面还挂在旧数据源上，用户会以为设置没生效。
+        String want = sourceKey(prefs.replayPack, prefs.replaySpeed);
+        if (runningSource != null && !runningSource.equals(want)) {
+            restartClient();
         }
         applyKeepScreenOn();
         refreshList();
