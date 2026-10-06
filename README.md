@@ -241,4 +241,8 @@ FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS – ESCAPE ROAD INSTRUCTIONS (14:2
 - **不保存任何凭据**：连接用的是一次性令牌，用完即弃
 - 内容版权归 Formula One World Championship Limited，请**仅供个人非商业使用**
 
+**同族的 Windows 版**：[F1-RaceControl-Desktop](https://github.com/Xixixiao2007/F1-RaceControl-Desktop)
+—— 同一份数据层源码编译两遍（不是照着重写），右侧面板可以各自拉成独立原生窗口同时显示，
+并自带 Web 服务器，手机 / iPhone 打开浏览器看到的界面和 Windows 上完全一样。
+
 **许可证**：MIT
