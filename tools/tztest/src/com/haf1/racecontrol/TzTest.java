@@ -696,6 +696,44 @@ public class TzTest {
                 Boolean.valueOf(Classifier.barColor(Classifier.K_CHEQUERED) != 0xFF0288D1),
                 Boolean.TRUE);
 
+        section("圆环区段配色：只看区段，绝不整圈染色");
+        // 用户报的原话："安卓端单黄旗会全赛道显示"。
+        // 根因：官方 TrackStatus 流的 "2"(黄旗) 在**只有单个区段**黄旗时也会发，
+        // 于是 TrackState.global=YELLOW；老代码在圆环里按 global 整圈染色，
+        // 看起来就跟全赛道黄旗一模一样。
+        // 规则：全赛道旗语放在**圈内**（圆心色块 + 文字），圈上只表达区段。
+        java.util.List<Integer> one = java.util.Arrays.asList(Integer.valueOf(5));
+        eq("没旗语 -> 区段底色",
+                Integer.valueOf(Classifier.ringSectorColour(1, null, null)),
+                Integer.valueOf(Classifier.RING_IDLE));
+        eq("单个区段黄 -> 那一段黄",
+                Integer.valueOf(Classifier.ringSectorColour(5, null, one)),
+                Integer.valueOf(Classifier.RING_YELLOW));
+        eq("★ 单个区段黄 -> 别的区段不黄（这就是那个 bug）",
+                Integer.valueOf(Classifier.ringSectorColour(6, null, one)),
+                Integer.valueOf(Classifier.RING_IDLE));
+        eq("双黄盖过单黄",
+                Integer.valueOf(Classifier.ringSectorColour(5, one, one)),
+                Integer.valueOf(Classifier.RING_DOUBLE_YELLOW));
+
+        // 端到端：真喂一个"单区段黄 + TrackStatus=2"，逐段数黄色段数
+        TrackState sr = new TrackState();
+        sr.onMessage(mk("YELLOW", "Flag", "5", "YELLOW IN TRACK SECTOR 5"));
+        sr.onTrackStatus("2");
+        eq("此时 global 确实是黄（数据如此，拦不住）",
+                Integer.valueOf(sr.globalLevel()), Integer.valueOf(TrackState.YELLOW));
+        int ringYellow = 0;
+        for (int i = 1; i <= 15; i++) {
+            if (Classifier.ringSectorColour(i, sr.doubleYellowSectors(),
+                    sr.yellowSectors()) == Classifier.RING_YELLOW) {
+                ringYellow++;
+            }
+        }
+        eq("★ 圆环上黄的段数 = 1（不是整圈）",
+                Integer.valueOf(ringYellow), Integer.valueOf(1));
+        eq("圆心文案说清是区段而不是全场",
+                sr.detail(), "区段 5");
+
         section("Prefs.accept：过滤开关与车号筛选");
         Prefs p = new Prefs();
         p.noiseFilterEnabled = true;

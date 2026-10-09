@@ -59,6 +59,8 @@ public class RightPanelView extends View {
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint arc = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** 圆心那个色块（全赛道旗语的底色）。 */
+    private final Paint disc = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public RightPanelView(Context c) {
         super(c);
@@ -149,18 +151,23 @@ public class RightPanelView extends View {
         }
         float band = Math.max(dp(10), rOuter * 0.30f);
         float rMid = rOuter - band / 2f;
+        float rIn = rMid - band / 2f;          // 圈内可用半径（放全赛道旗语）
         RectF oval = new RectF(cx - rMid, cy - rMid, cx + rMid, cy + rMid);
         arc.setStrokeWidth(band);
 
         float sweep = F1Layout.arcSweep(n);
         List<Integer> dys = feed.track.doubleYellowSectors();
         List<Integer> ys = feed.track.yellowSectors();
-        int global = feed.track.globalLevel();
         boolean numbered = F1Layout.labelFits(rMid, n, dp(15));
 
         for (int i = 0; i < n; i++) {
             int sec = i + 1;
-            arc.setColor(segmentColour(sec, dys, ys, global));
+            // ★ 圈上**只画区段级**旗语（单黄 / 双黄）。
+            //   老代码还按 global 整圈染色，而官方 TrackStatus 的 "2"(黄旗) 在
+            //   只有单个区段黄旗时也会发 → global=YELLOW → 整圈黄，看起来就是
+            //   全赛道黄旗（用户报的"单黄旗会全赛道显示"）。
+            //   规则：全赛道旗语放到**圈内**（下面圆心那块），圈上只表达区段。
+            arc.setColor(Classifier.ringSectorColour(sec, dys, ys));
             // ★ Canvas 的 0 度在 3 点方向，本类的 0 度在 12 点 —— 要减 90。
             c.drawArc(oval, F1Layout.ringStarts(n)[i] - 90f, sweep - 0.8f,
                     false, arc);
@@ -172,35 +179,24 @@ public class RightPanelView extends View {
             }
         }
 
-        // 圆心：轨道级状态
-        String big = feed.track.label();
-        txt(c, big, cx, cy - dp(2), 16, 0xFF212121, Paint.Align.CENTER, true);
+        // 圆心：**全赛道**旗语（红旗 / 安全车 / VSC / 全赛道黄 / 绿旗）。
+        // 和桌面版一致：填一块底色 + 一行大字 + 一行小字。
+        disc.setColor(feed.track.color());
+        c.drawCircle(cx, cy, rIn * 0.92f, disc);
+        int fg = feed.track.textColor();
+        txt(c, feed.track.label(), cx, cy - dp(2), 16, fg, Paint.Align.CENTER, true);
         String sub = feed.track.detail();
         if (sub.length() > 0 && sub.length() <= 18) {
-            txt(c, sub, cx, cy + dp(14), 11, 0xFF607D8B, Paint.Align.CENTER, false);
+            // 副标题用同色但半透明，免得在浅底上分不清主次
+            txt(c, sub, cx, cy + dp(14), 11, (fg & 0x00FFFFFF) | 0xB0000000,
+                    Paint.Align.CENTER, false);
         }
         txt(c, n + " 个区段", w / 2f, h - dp(6), 10, 0xFF90A4AE,
                 Paint.Align.CENTER, false);
     }
 
-    private int segmentColour(int sec, List<Integer> dys, List<Integer> ys, int global) {
-        if (global == TrackState.RED) {
-            return 0xFFD32F2F;
-        }
-        if (global == TrackState.SC) {
-            return 0xFFF57C00;
-        }
-        if (global == TrackState.VSC) {
-            return 0xFFF9A825;
-        }
-        if (dys.contains(Integer.valueOf(sec))) {
-            return 0xFFFFEB3B;
-        }
-        if (global == TrackState.YELLOW || ys.contains(Integer.valueOf(sec))) {
-            return 0xFFFFF176;
-        }
-        return 0xFF455A64;
-    }
+    // 区段配色统一走 Classifier.ringSectorColour（纯函数，能桌面单测；
+    // 而且它**不接受**全赛道状态参数 —— 见那里的注释，整圈染色就是这么错的）。
 
     // ------------------------------------------------------------------
     // 1 轮胎 / 进站：22 位、三列每列 8 行、按赛道位置
