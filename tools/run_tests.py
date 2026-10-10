@@ -58,6 +58,7 @@ TESTED_SOURCES = (
     "F1Feed.java",        # F1 官方流的增量合并（A 方案）
     "F1Layout.java",      # 界面几何计算（圆环 / 轮胎面板 / 旗语栏）
     "FeedSource.java",    # 数据源接口（真流 / 回放）
+    "DelayGate.java",     # 显示延时闸门（对齐有延迟的直播画面；纯逻辑 + 注入时钟）
     "ReplayClient.java",  # 回放包播放（假数据测试的地基；不依赖 android.*）
     # F1Client 也拉进来编译：回放客户端要复用它的 Listener 接口，
     # 而且它本身是纯逻辑 + javax.net.ssl，桌面 JVM 编得过。

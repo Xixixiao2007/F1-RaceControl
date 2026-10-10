@@ -384,7 +384,13 @@ public class F1MainActivity extends Activity {
             stage = "回放：" + (prefs.replayName == null || prefs.replayName.length() == 0
                     ? "已选文件" : prefs.replayName);
         } else {
-            client = new F1Client(listener);
+            // ★ 先建成 F1Client 再赋给 client：字段声明的类型是 FeedSource，
+            //   在它上面看不到 setDelaySeconds（编译期就报"找不到符号"）。
+            F1Client c = new F1Client(listener);
+            // 显示延时（对齐有延迟的直播画面）。放在这里是因为它能在运行中改，
+            // 不用重连；onResume 里改完设置也会再调一次。
+            c.setDelaySeconds(prefs.delaySec);
+            client = c;
             stage = "正在连官方流…";
         }
 
@@ -631,6 +637,10 @@ public class F1MainActivity extends Activity {
         super.onResume();
         prefs = Prefs.load(this);
         prefs.applyTo(gate);
+        // 延时能在运行中改：从设置页回来立刻生效，不用重连、不用重启 App。
+        if (client instanceof F1Client) {
+            ((F1Client) client).setDelaySeconds(prefs.delaySec);
+        }
         // 从设置页回来时把「精简」默认值同步过来（用户没在主界面手动切过的话）。
         // 否则改了设置回到主界面看不到变化，会以为设置没生效。
         if (!userToggledFilter) {

@@ -36,6 +36,8 @@ public class SettingsActivity extends Activity {
     private EditText cooldownBox;
     private EditText dySecondsBox;
     private EditText autoStopBox;
+    /** 消息延时（秒）—— 整个显示滞后 N 秒对齐直播画面。 */
+    private EditText delayBox;
 
     private CheckBox flashBox;
     private CheckBox keepScreenBox;
@@ -300,6 +302,16 @@ public class SettingsActivity extends Activity {
         dySecondsBox = number(root, "双黄升级阈值（秒）", String.valueOf(p.dyEscalateSec),
                 "存活超过它就认为不是测试。默认 15。");
 
+        // ---- 显示延时（对齐有延迟的直播画面）----
+        header(root, "显示延时");
+        label(root, "把整个显示滞后 N 秒，用来对齐有延迟的电视 / 直播画面。",
+                "电视比官方计时源晚几秒，不延时的话 App 会「剧透」电视上还没发生的画面"
+                        + "（成绩、圈速、圆环、旗语、通报、提醒都一起滞后，互相之间不会打架）。"
+                        + "0 = 关闭。调大之后画面会先停住 N 秒再继续 —— 因为它要开始显示"
+                        + "「N 秒之前」；调小立即生效。");
+        delayBox = number(root, "消息延时（秒）", String.valueOf(p.delaySec),
+                "0 - " + DelayGate.MAX_SECONDS + "，默认 0。");
+
         Button save = new Button(this);
         save.setText("保存");
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
@@ -458,6 +470,11 @@ public class SettingsActivity extends Activity {
         p.noiseHideDeleted = hideDeletedBox.isChecked();
         p.carFilter = carBox.getText().toString().trim();
         p.excludeKeywords = Prefs.splitLines(excludeBox.getText().toString());
+
+        // 显示延时：0 = 关闭；上限用 DelayGate 的口径，别在两处各写一个数
+        p.delaySec = Prefs.clamp(
+                parse(delayBox.getText().toString(), p.delaySec),
+                0, DelayGate.MAX_SECONDS);
 
         p.soundEnabled = soundBox.isChecked();
         p.vibrateEnabled = vibrateBox.isChecked();

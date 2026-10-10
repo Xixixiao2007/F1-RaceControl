@@ -77,6 +77,16 @@ public class TzTest {
                 sector.length() > 0 ? "Sector" : "Track", sector, "", "", eventId, seq);
     }
 
+    /** 造一条假的 type=1 增量记录（DelayGate 单测用：只认 target 和一个序号）。 */
+    private static org.json.JSONObject rec(String target, int n) {
+        try {
+            return new org.json.JSONObject(
+                    "{\"type\":1,\"target\":\"" + target + "\",\"n\":" + n + "}");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private static byte[] serverFrame(byte[] payload) {
         java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
         b.write(0x80 | WsFrame.OP_TEXT);
@@ -733,6 +743,73 @@ public class TzTest {
                 Integer.valueOf(ringYellow), Integer.valueOf(1));
         eq("圆心文案说清是区段而不是全场",
                 sr.detail(), "区段 5");
+
+        section("DelayGate：延时闸门（对齐有延迟的直播画面）");
+        // 语义（用户确认过）：整份快照不延时；只影响"何时看见"不丢数据；
+        // 调大 = 先停住后继续；调小 = 立即放行到期的。
+        // 用注入时钟 pump(nowMs)，所以是确定性的，不 sleep。
+        // ★ 变量名都带 dly 前缀：main() 是一整个大方法，seen/dg/t0 这种名字
+        //   早就被前面的用例占了（第一次就撞了，编译不过）。
+        final java.util.List<String> dlySeen = new java.util.ArrayList<String>();
+        DelayGate dlyA = new DelayGate(30 * 1000L, new DelayGate.Sink() {
+            public void accept(org.json.JSONObject r) {
+                dlySeen.add(r.optString("target", "?") + "#" + r.optInt("n", -1));
+            }
+        });
+        eq("初始延时 = 30 秒", Long.valueOf(dlyA.delayMs()), Long.valueOf(30000L));
+        long dlyT0 = 1000000L;
+        dlyA.offer(rec("TimingData", 1), dlyT0);
+        dlyA.offer(rec("TimingData", 2), dlyT0 + 5000);
+        eq("刚喂进去：一条都不放行",
+                Integer.valueOf(dlySeen.size()), Integer.valueOf(0));
+        eq("队列里压着 2 条", Integer.valueOf(dlyA.queued()), Integer.valueOf(2));
+        dlyA.pump(dlyT0 + 29000);
+        eq("差 1 秒到期：还是不放",
+                Integer.valueOf(dlySeen.size()), Integer.valueOf(0));
+        dlyA.pump(dlyT0 + 30000);
+        eq("到时放第一条", dlySeen.toString(), "[TimingData#1]");
+        dlyA.pump(dlyT0 + 35000);
+        eq("第二条按自己的到点时间放", dlySeen.toString(),
+                "[TimingData#1, TimingData#2]");
+        eq("放行数 = 2", Long.valueOf(dlyA.releasedCount()), Long.valueOf(2L));
+
+        dlyA.offer(rec("TrackStatus", 3), dlyT0 + 36000);
+        dlyA.setDelayMs(0);
+        dlyA.pump(dlyT0 + 36000);
+        eq("★ 调成 0 秒后立刻放行（不用再等 30 秒）", dlySeen.toString(),
+                "[TimingData#1, TimingData#2, TrackStatus#3]");
+        dlyA.offer(rec("SessionStatus", 4), dlyT0 + 37000);
+        eq("0 秒时是直通（等于改动前的行为）", dlySeen.toString(),
+                "[TimingData#1, TimingData#2, TrackStatus#3, SessionStatus#4]");
+        eq("0 秒时队列为空", Integer.valueOf(dlyA.queued()), Integer.valueOf(0));
+
+        dlyA.setDelayMs(-5);
+        eq("负数当 0", Long.valueOf(dlyA.delayMs()), Long.valueOf(0L));
+        dlyA.setDelayMs(9999L * 1000L);
+        eq("超过上限被截断到 " + DelayGate.MAX_SECONDS + " 秒",
+                Long.valueOf(dlyA.delayMs()),
+                Long.valueOf(DelayGate.MAX_SECONDS * 1000L));
+
+        DelayGate dlyB = new DelayGate(10000L, new DelayGate.Sink() {
+            public void accept(org.json.JSONObject r) { }
+        });
+        dlyB.offer(rec("TimingData", 9), dlyT0);
+        eq("清之前有 1 条", Integer.valueOf(dlyB.queued()), Integer.valueOf(1));
+        eq("clear() 返回丢掉几条", Integer.valueOf(dlyB.clear()), Integer.valueOf(1));
+        eq("清之后空了（收到新快照时必须这样）",
+                Integer.valueOf(dlyB.queued()), Integer.valueOf(0));
+
+        final int[] dlyBig = new int[1];
+        DelayGate dlyC = new DelayGate(5000L, new DelayGate.Sink() {
+            public void accept(org.json.JSONObject r) { dlyBig[0]++; }
+        });
+        dlyC.setDelayMs(20000L);
+        dlyC.offer(rec("LapCount", 7), dlyT0);
+        dlyC.pump(dlyT0 + 6000);
+        eq("调大到 20 秒后，6 秒时还不放（画面先停住）",
+                Integer.valueOf(dlyBig[0]), Integer.valueOf(0));
+        dlyC.pump(dlyT0 + 20000);
+        eq("20 秒时放行", Integer.valueOf(dlyBig[0]), Integer.valueOf(1));
 
         section("Prefs.accept：过滤开关与车号筛选");
         Prefs p = new Prefs();
