@@ -811,6 +811,69 @@ public class TzTest {
         dlyC.pump(dlyT0 + 20000);
         eq("20 秒时放行", Integer.valueOf(dlyBig[0]), Integer.valueOf(1));
 
+        section("PositionFlash：名次急剧后退（5 秒 2 位 / 10 秒 3 位）");
+        // 用户要的："名次页面名次急剧后退（5 秒 2 位、10 秒 3 位）加上车手一条的
+        // 闪动提醒"。规则是纯逻辑 + 注入时钟，所以下面全是确定性断言。
+        long pfT = 5000000L;
+        PositionFlash pfA = new PositionFlash();
+        pfA.sample("1", 5, pfT);
+        pfA.sample("1", 7, pfT + 5000);          // 5 秒掉 2 位
+        eq("5 秒掉 2 位 → 该闪",
+                Boolean.valueOf(pfA.flashing("1", pfT + 5000)), Boolean.TRUE);
+        eq("掉位数算得对",
+                Integer.valueOf(pfA.droppedIn("1", PositionFlash.SHORT_MS, pfT + 5000)),
+                Integer.valueOf(2));
+        eq("闪动 " + (PositionFlash.FLASH_MS / 1000) + " 秒后自己结束",
+                Boolean.valueOf(pfA.flashing("1",
+                        pfT + 5000 + PositionFlash.FLASH_MS + 1)), Boolean.FALSE);
+
+        PositionFlash pfB = new PositionFlash();
+        pfB.sample("2", 3, pfT);
+        pfB.sample("2", 4, pfT + 5000);          // 只掉 1 位
+        eq("5 秒只掉 1 位 → 不闪",
+                Boolean.valueOf(pfB.flashing("2", pfT + 5000)), Boolean.FALSE);
+
+        // 慢速下滑：每 3 秒掉 1 位 —— 5 秒窗口里只掉 1，但 10 秒窗口里掉了 3
+        PositionFlash pfC = new PositionFlash();
+        pfC.sample("3", 3, pfT);
+        pfC.sample("3", 4, pfT + 3000);
+        pfC.sample("3", 5, pfT + 6000);
+        pfC.sample("3", 6, pfT + 9000);
+        eq("10 秒掉 3 位（5 秒内只掉 1）→ 该闪",
+                Boolean.valueOf(pfC.flashing("3", pfT + 9000)), Boolean.TRUE);
+
+        PositionFlash pfD = new PositionFlash();
+        pfD.sample("4", 9, pfT);
+        pfD.sample("4", 5, pfT + 5000);          // 超车：名次前进
+        eq("超车（名次前进）→ 不闪",
+                Boolean.valueOf(pfD.flashing("4", pfT + 5000)), Boolean.FALSE);
+        eq("前进时掉位数是 0",
+                Integer.valueOf(pfD.droppedIn("4", PositionFlash.SHORT_MS, pfT + 5000)),
+                Integer.valueOf(0));
+
+        PositionFlash pfE = new PositionFlash();
+        pfE.sample("5", 1, pfT);
+        pfE.sample("5", 9, pfT + 100);           // 同一秒：节流忽略
+        pfE.sample("5", 9, pfT + 200);           // 同一秒：节流忽略
+        eq("同一秒内多次采样被节流（抖动不会误报）",
+                Integer.valueOf(pfE.droppedIn("5", PositionFlash.SHORT_MS, pfT + 5000)),
+                Integer.valueOf(0));
+
+        PositionFlash pfF = new PositionFlash();
+        pfF.sample("6", 0, pfT);                 // 还没计时
+        pfF.sample("6", 0, pfT + 5000);
+        eq("名次未知（0）不触发",
+                Boolean.valueOf(pfF.flashing("6", pfT + 5000)), Boolean.FALSE);
+
+        PositionFlash pfG = new PositionFlash();
+        pfG.sample("7", 2, pfT);
+        pfG.sample("7", 5, pfT + 5000);
+        eq("一个车手的状态不会波及别人",
+                Boolean.valueOf(pfG.flashing("8", pfT + 5000)), Boolean.FALSE);
+        pfG.clear();
+        eq("clear 之后不留状态",
+                Boolean.valueOf(pfG.flashing("7", pfT + 5000)), Boolean.FALSE);
+
         section("Prefs.accept：过滤开关与车号筛选");
         Prefs p = new Prefs();
         p.noiseFilterEnabled = true;
