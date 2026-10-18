@@ -319,10 +319,13 @@ public class SettingsActivity extends Activity {
         // 内部仍为纯文本"。所以这里给导入/导出/恢复默认三个按钮，
         // 改译文不用等新版 APK。
         header(root, "翻译库");
-        label(root, "改译文不用等新版 APK：导入一个 .rctrans 文件（纯文本，一行一条「英文短语 = 中文」）即可。",
-                "「导出」会给你一份包含当前全部词条的模板，改完再导回来；"
+        label(root, "改译文不用等新版 APK：导入一个 .rctrans 文件（纯文本，分四段）即可。",
+                "文件里有：[phrases] 英文短语→中文、[drivers] 车手译名、"
+                        + "[texts] 全部中文片段（改哪句都行，默认等于原样）、"
+                        + "[patterns] 带变量的正则覆盖（取消注释才生效）。"
+                        + "「导出」会给你一份包含当前全部内容的模板，改完再导回来；"
                         + "「恢复默认」= 删掉导入的、回到内置译文。"
-                        + "当前生效的用户词条：" + Translator.userTableSize() + " 条。");
+                        + "当前生效的用户改动：" + Translator.userTableSize() + " 条。");
         Button transImport = new Button(this);
         transImport.setText("导入翻译（.rctrans）");
         transImport.setOnClickListener(new View.OnClickListener() {

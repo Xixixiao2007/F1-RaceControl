@@ -951,6 +951,83 @@ public class TzTest {
                 Boolean.valueOf(Translator.exportTrans()
                         .contains("CAUSING A COLLISION = 造成碰撞")), Boolean.TRUE);
 
+        // ---- 四段式：车手译名 / 全部中文片段 / 正则覆盖 ----
+        // 用户追问："需要正则匹配带变量的内容呢？车手译名呢？" → 都要能在 .rctrans 里改。
+        String rcFull = Translator.exportTrans();
+        eq("导出含 [phrases] 段", Boolean.valueOf(rcFull.contains("[phrases]")), Boolean.TRUE);
+        eq("导出含 [drivers] 段", Boolean.valueOf(rcFull.contains("[drivers]")), Boolean.TRUE);
+        eq("导出含 [texts] 段", Boolean.valueOf(rcFull.contains("[texts]")), Boolean.TRUE);
+        eq("导出含 [patterns] 段", Boolean.valueOf(rcFull.contains("[patterns]")), Boolean.TRUE);
+        eq("车手译名在文件里（编辑即生效）",
+                Boolean.valueOf(rcFull.contains("VER = 维斯塔潘")), Boolean.TRUE);
+        eq("正则示例默认被注释掉（否则会悄悄改掉现有译文）",
+                Boolean.valueOf(rcFull.contains("# RISK OF RAIN FOR")), Boolean.TRUE);
+        eq("中文片段清单规模够大（>=150 条，覆盖全部文案）",
+                Boolean.valueOf(TransTexts.DEFAULTS.length >= 150), Boolean.TRUE);
+        eq("片段清单里含界面常见文案",
+                Boolean.valueOf(Translator.exportTrans().contains("某车手 = 某车手")),
+                Boolean.TRUE);
+
+        String rpMsg =
+                "FIA STEWARDS: REPRIMAND (DRIVING) FOR CAR 23 (ALB) - CAUSING A COLLISION";
+        String rpBase = Translator.gloss(rpMsg);
+        // [texts]：改中文片段
+        java.util.LinkedHashMap<String, String> textsOnly =
+                new java.util.LinkedHashMap<String, String>();
+        textsOnly.put("训诫", "警告");
+        Translator.applyTransFile("[texts]\n训诫 = 警告\n");
+        String rpTexts = Translator.gloss(rpMsg);
+        eq("★ [texts] 改片段生效（训诫 -> 警告）",
+                Boolean.valueOf(rpTexts != null && rpTexts.contains("警告")
+                        && !rpTexts.contains("训诫")), Boolean.TRUE);
+        // [drivers]：改车手译名
+        Translator.applyTransFile("[drivers]\nALB = 阿尔本X\n");
+        String rpDriver = Translator.gloss(rpMsg);
+        eq("★ [drivers] 改车手译名生效",
+                Boolean.valueOf(rpDriver != null && rpDriver.contains("阿尔本X")),
+                Boolean.TRUE);
+        // [patterns]：正则 + 变量，整条覆盖
+        Translator.applyTransFile(
+                "[patterns]\nREPRIMAND.*CAR\\s+(\\d+)\\s*\\(([A-Z]{3})\\).* = 自定义训诫 {1} {2}\n");
+        String rpPattern = Translator.gloss(rpMsg);
+        eq("★ [patterns] 正则带变量整条覆盖生效", rpPattern, "自定义训诫 23 ALB");
+        // 清空 -> 回到内置
+        Translator.applyTransFile("");
+        eq("清空之后回到内置译文", Translator.gloss(rpMsg), rpBase);
+        eq("清空之后条数归零",
+                Integer.valueOf(Translator.userTableSize()), Integer.valueOf(0));
+        // 坏正则不炸整套（跳过那一条）
+        Translator.applyTransFile("[patterns]\n((( = 坏正则\n[texts]\n训诫 = 警告2\n");
+        eq("坏正则跳过、其它条目仍生效",
+                Boolean.valueOf(Translator.gloss(rpMsg) != null
+                        && Translator.gloss(rpMsg).contains("警告2")), Boolean.TRUE);
+        Translator.applyTransFile("");
+        // 导出当前（含用户改动）
+        Translator.applyTransFile("[drivers]\nVER = 维斯塔潘X\n");
+        eq("currentTrans 含用户改动",
+                Boolean.valueOf(Translator.currentTrans().contains("VER = 维斯塔潘X")),
+                Boolean.TRUE);
+        // ★ 回归：导出的 [patterns] 不能把内置示例写成"生效"状态。
+        //   验证者第五棒抓到的坑：导出文件再当词库加载，89/140 条译文被示例规则改掉。
+        String cur = Translator.currentTrans();
+        // 注意用 lastIndexOf：文件头说明里也写着 "[patterns]" 四个字
+        int pi = cur.lastIndexOf("[patterns]");
+        int activePatternLines = 0;
+        if (pi >= 0) {
+            String[] pl = cur.substring(pi).split("\n");
+            for (int i = 1; i < pl.length; i++) {
+                String s = pl[i].trim();
+                if (s.length() > 0 && !s.startsWith("#") && s.indexOf(" = ") > 0) {
+                    activePatternLines++;
+                }
+            }
+        }
+        eq("导出文件里没有生效的内置示例规则（默认 0 条）",
+                Integer.valueOf(activePatternLines), Integer.valueOf(0));
+        eq("但示例仍然作为注释保留给用户看",
+                Boolean.valueOf(cur.contains("# RISK OF RAIN FOR")), Boolean.TRUE);
+        Translator.applyTransFile("");
+
         section("Prefs.accept：过滤开关与车号筛选");
         Prefs p = new Prefs();
         p.noiseFilterEnabled = true;

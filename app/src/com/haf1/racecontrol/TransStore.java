@@ -44,14 +44,16 @@ final class TransStore {
         try {
             File f = file(c);
             if (!f.isFile()) {
-                Translator.setUserTable(null);
+                Translator.clearUserTrans();
                 return 0;
             }
-            java.util.LinkedHashMap<String, String> m = RcTrans.parse(readText(f));
-            Translator.setUserTable(m.isEmpty() ? null : m);
-            return m.size();
+            int n = Translator.applyTransFile(readText(f));
+            if (n <= 0) {
+                Translator.clearUserTrans();
+            }
+            return n;
         } catch (Exception e) {
-            Translator.setUserTable(null);
+            Translator.clearUserTrans();
             return 0;
         }
     }
@@ -72,14 +74,13 @@ final class TransStore {
         } finally {
             in.close();
         }
-        java.util.LinkedHashMap<String, String> m = RcTrans.parse(text);
-        if (m.isEmpty()) {
+        int n = Translator.applyTransFile(text);
+        if (n <= 0) {
             return 0;
         }
         // 原样存下来：用户写的注释/顺序都留着，下次导出还能看到自己的备注
         writeText(file(c), text);
-        Translator.setUserTable(m);
-        return m.size();
+        return n;
     }
 
     /** 把**当前生效的完整词表**（内置 + 已导入的覆盖）导出到用户选的位置。 */
@@ -102,7 +103,7 @@ final class TransStore {
             // 删不掉也不要紧：下面这句已经把内存里的覆盖清掉了
             f.delete();
         }
-        Translator.setUserTable(null);
+        Translator.clearUserTrans();
     }
 
     // ------------------------------------------------------------------

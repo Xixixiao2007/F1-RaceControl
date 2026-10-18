@@ -61,6 +61,7 @@ TESTED_SOURCES = (
     "DelayGate.java",     # 显示延时闸门（对齐有延迟的直播画面；纯逻辑 + 注入时钟）
     "PositionFlash.java", # 名次急剧后退判定（5 秒 2 位 / 10 秒 3 位），纯逻辑
     "RcTrans.java",       # .rctrans 翻译库（解析 / 合并 / 最长匹配），纯逻辑
+    "TransTexts.java",    # 翻译器全部中文字面量（自动生成，供 [texts] 段）
     "ReplayClient.java",  # 回放包播放（假数据测试的地基；不依赖 android.*）
     # F1Client 也拉进来编译：回放客户端要复用它的 Listener 接口，
     # 而且它本身是纯逻辑 + javax.net.ssl，桌面 JVM 编得过。

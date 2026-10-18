@@ -106,52 +106,167 @@ public final class Translator {
      * 这个把用户改过的并进去 —— 用户点「导出」拿到的应该是他现在看到的那份。
      */
     public static String currentTrans() {
-        java.util.LinkedHashMap<String, String> pairs =
-                RcTrans.parse(exportTrans());
-        pairs.putAll(userTable);
-        return RcTrans.format(pairs);
+        RcTrans.Pack pack = defaultPack();
+        // ★ 示例规则不算"用户启用的"：清掉，只写用户真正取消注释的那些。
+        //   否则导出的文件一被当作词库加载，示例规则会突然生效、改掉一批译文
+        //   （验证者第五棒实测：89/140 条译文变化）。
+        pack.patterns.clear();
+        pack.phrases.putAll(userTable);
+        pack.drivers.putAll(userDrivers);
+        pack.texts.putAll(userTexts);
+        pack.patterns.addAll(userRules);
+        return RcTrans.formatPack(pack, false, patternExamples());
     }
+
+    /** 内置的正则示例（导出时始终注释掉，作为模板）。 */
+    private static java.util.List<RcTrans.Rule> patternExamples() {
+        java.util.List<RcTrans.Rule> out =
+                new java.util.ArrayList<RcTrans.Rule>();
+        for (int i = 0; i + 1 < PATTERN_EXAMPLES.length; i += 2) {
+            out.add(new RcTrans.Rule(PATTERN_EXAMPLES[i], PATTERN_EXAMPLES[i + 1]));
+        }
+        return out;
+    }
+
+    /**
+     * 内置的完整词库：四段全给。
+     *
+     * <ul>
+     *   <li>phrases：处置原因 / 删除原因（英文短语 -> 中文，最长匹配）；</li>
+     *   <li>drivers：车手三位缩写 -> 中文姓氏（精确查表）；</li>
+     *   <li>**texts：翻译器里用到的全部中文片段**（{@link TransTexts} 自动抽取）。
+     *       默认"键 = 值"，所以不改就等于原来的输出；改了就在译文里替换。</li>
+     *   <li>patterns：带变量的正则覆盖**示例**（导出时整段注释掉，取消注释才生效）。</li>
+     * </ul>
+     */
+    static RcTrans.Pack defaultPack() {
+        RcTrans.Pack pack = new RcTrans.Pack();
+        for (int i = 0; i < REASONS.length; i++) {
+            pack.phrases.put(REASONS[i][0], REASONS[i][1]);
+        }
+        for (int i = 0; i < DELETE_REASONS.length; i++) {
+            pack.phrases.put(DELETE_REASONS[i][0], DELETE_REASONS[i][1]);
+        }
+        for (java.util.Map.Entry<String, String> e : DRIVERS.entrySet()) {
+            pack.drivers.put(e.getKey(), e.getValue());
+        }
+        for (int i = 0; i < TransTexts.DEFAULTS.length; i++) {
+            String s = TransTexts.DEFAULTS[i];
+            pack.texts.put(s, s);              // 默认键 = 值：不改就等于原输出
+        }
+        for (int i = 0; i + 1 < PATTERN_EXAMPLES.length; i += 2) {
+            pack.patterns.add(new RcTrans.Rule(
+                    PATTERN_EXAMPLES[i], PATTERN_EXAMPLES[i + 1]));
+        }
+        return pack;
+    }
+
+    /**
+     * 带变量的正则覆盖**示例**（导出到 .rctrans 时整段被注释掉）。
+     *
+     * 取消注释即生效：命中后**整条译文**换成模板，不再走内置规则。
+     * 偶数下标 = 正则，奇数下标 = 中文模板（{1} = 第 1 个捕获组）。
+     */
+    private static final String[] PATTERN_EXAMPLES = {
+            "FIA STEWARDS:\\s*REPRIMAND.*?CAR\\s+(\\d+)\\s*\\(([A-Z]{3})\\).*",
+            "★ 训诫：{2}（{1} 号车）",
+            "CAR\\s+(\\d+)\\s*\\(([A-Z]{3})\\).*?(\\d+)\\s*SECOND\\w*\\s*PENALTY",
+            "{2}（{1} 号车）罚 {3} 秒",
+            "TURN\\s+(\\d+)",
+            "{1} 号弯",
+            "LAP\\s+(\\d+)",
+            "第 {1} 圈",
+            "SECTOR\\s+(\\d+)",
+            "第 {1} 区段",
+            "RISK OF RAIN FOR (.+?) IS (\\d+)\\s*%",
+            "{1} 降雨概率 {2}%",
+    };
 
     /** 三位缩写 -> 中文姓氏。用数据里实际出现过的车手，查不到就退回缩写。 */
     private static final Map<String, String> DRIVERS = new HashMap<String, String>();
 
     /**
-     * 用户导入的翻译词表（英文短语 -> 中文，来自 .rctrans 文件）。
+     * 用户导入的翻译库（.rctrans，四段）。
      * 空表示只走内置规则。volatile：界面上导入后立即对读线程生效。
      */
     private static volatile Map<String, String> userTable =
             java.util.Collections.emptyMap();
+    private static volatile Map<String, String> userDrivers =
+            java.util.Collections.emptyMap();
+    /** 中文片段替换（只留"真正改过"的：键 != 值）。 */
+    private static volatile Map<String, String> userTexts =
+            java.util.Collections.emptyMap();
+    /** 片段替换的键，按长度降序 —— 长片段先换，短串不会把整句拆坏。 */
+    private static volatile String[] userTextKeys = new String[0];
+    /** 用户自定义的正则覆盖规则（取消注释的那些）。 */
+    private static volatile java.util.List<RcTrans.Rule> userRules =
+            java.util.Collections.emptyList();
 
-    /** 设置/清除用户词表（null 或空 = 恢复内置规则）。 */
-    public static void setUserTable(Map<String, String> table) {
+    /**
+     * 一次性应用一份 .rctrans 文件（短语 + 车手 + 片段 + 正则）。
+     *
+     * @return 总条数（界面显示"已导入 N 条"）
+     */
+    public static synchronized int applyTransFile(String text) {
+        RcTrans.Pack pack = RcTrans.parsePack(text);
+        userTable = pack.phrases.isEmpty()
+                ? java.util.Collections.<String, String>emptyMap()
+                : java.util.Collections.unmodifiableMap(
+                        new java.util.LinkedHashMap<String, String>(pack.phrases));
+        userDrivers = pack.drivers.isEmpty()
+                ? java.util.Collections.<String, String>emptyMap()
+                : java.util.Collections.unmodifiableMap(
+                        new java.util.LinkedHashMap<String, String>(pack.drivers));
+        java.util.LinkedHashMap<String, String> changed =
+                new java.util.LinkedHashMap<String, String>();
+        for (java.util.Map.Entry<String, String> e : pack.texts.entrySet()) {
+            if (!e.getKey().equals(e.getValue())) {     // 只留真改过的
+                changed.put(e.getKey(), e.getValue());
+            }
+        }
+        userTexts = changed;
+        java.util.List<String> ks = new java.util.ArrayList<String>(changed.keySet());
+        java.util.Collections.sort(ks, new java.util.Comparator<String>() {
+            public int compare(String a, String b) {
+                return b.length() - a.length();
+            }
+        });
+        userTextKeys = ks.toArray(new String[ks.size()]);
+        userRules = pack.patterns;
+        return pack.size();
+    }
+
+    /** 兼容旧调用：只设置短语表（其它三段的用户改动不受影响）。 */
+    public static synchronized void setUserTable(Map<String, String> table) {
         userTable = table == null
                 ? java.util.Collections.<String, String>emptyMap()
                 : java.util.Collections.unmodifiableMap(
                         new java.util.LinkedHashMap<String, String>(table));
     }
 
-    /** 当前用户词表的条数（设置页显示"已导入 N 条"用）。 */
+    /** 清除全部用户改动（恢复内置）。 */
+    public static synchronized void clearUserTrans() {
+        userTable = java.util.Collections.emptyMap();
+        userDrivers = java.util.Collections.emptyMap();
+        userTexts = java.util.Collections.emptyMap();
+        userTextKeys = new String[0];
+        userRules = java.util.Collections.emptyList();
+    }
+
+    /** 当前用户改动的总条数（设置页显示"已导入 N 条"用）。 */
     public static int userTableSize() {
-        return userTable.size();
+        return userTable.size() + userDrivers.size() + userTexts.size()
+                + userRules.size();
     }
 
     /**
-     * 导出内置的"短语 -> 中文"表，生成 .rctrans 文本给用户改。
+     * 导出内置的完整词库，生成 .rctrans 文本给用户改。
      *
-     * 只导出**纯词条**（处置原因、删除原因）—— 车手缩写表不导出：
-     * 那是"VER -> 维斯塔潘"这种三字母键，放进词表会命中任何包含该缩写的句子，
-     * 反而把译文弄坏。正则规则也留在代码里（那是逻辑，不是词条）。
+     * 短语 + 车手 + **全部中文片段**（TransTexts.DEFAULTS）都会写出去；
+     * 正则覆盖示例整段注释掉（不然自动生成的文件会悄悄改掉现有译文）。
      */
     public static String exportTrans() {
-        java.util.LinkedHashMap<String, String> pairs =
-                new java.util.LinkedHashMap<String, String>();
-        for (int i = 0; i < REASONS.length; i++) {
-            pairs.put(REASONS[i][0], REASONS[i][1]);
-        }
-        for (int i = 0; i < DELETE_REASONS.length; i++) {
-            pairs.put(DELETE_REASONS[i][0], DELETE_REASONS[i][1]);
-        }
-        return RcTrans.format(pairs);
+        return RcTrans.formatPack(defaultPack(), true);
     }
 
 
@@ -240,6 +355,10 @@ public final class Translator {
 
     /**
      * 翻成中文简述。翻不出来返回 null（调用方应显示原文）。
+     *
+     * 这是**唯一入口**：先走用户的正则覆盖（`.rctrans` 的 [patterns] 段，
+     * 取消注释的那些），再走内置规则，最后统一做一次"中文片段替换"
+     * （[texts] 段）—— 所以用户改任何一句用词都会体现在输出里。
      */
     public static String gloss(String text) {
         if (text == null) {
@@ -250,7 +369,52 @@ public final class Translator {
             return null;
         }
         String up = raw.toUpperCase(Locale.US);
+        String overridden = matchRule(up);
+        if (overridden != null) {
+            return applyTexts(overridden);
+        }
+        String g = glossRaw(up);
+        return g == null ? null : applyTexts(g);
+    }
 
+    /** 用户正则覆盖：命中就返回模板展开后的中文（未命中 null）。 */
+    private static String matchRule(String up) {
+        java.util.List<RcTrans.Rule> rules = userRules;
+        for (int i = 0; i < rules.size(); i++) {
+            String r = rules.get(i).apply(up);
+            if (r != null) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 用户的中文片段替换（[texts] 段）。长片段优先，所以
+     * "未遵守赛会指令" 和 "未遵守赛会指令（逃生通道）" 同时存在时不会互相拆坏。
+     */
+    static String applyTexts(String s) {
+        if (s == null || s.length() == 0) {
+            return s;
+        }
+        String[] keys = userTextKeys;
+        if (keys.length == 0) {
+            return s;
+        }
+        Map<String, String> table = userTexts;
+        String out = s;
+        for (int i = 0; i < keys.length; i++) {
+            String k = keys[i];
+            String v = table.get(k);
+            if (v != null) {
+                out = out.replace(k, v);
+            }
+        }
+        return out;
+    }
+
+    /** 内置规则本体（入参已经去空格、转大写）。 */
+    private static String glossRaw(String up) {
 
         // 集成自带的自测消息：`... - RACE CONTROL TEST`。
         // 它没有车号，落到下面的兜底会变成「某车手」—— 明明没有车手。
@@ -954,7 +1118,11 @@ public final class Translator {
     }
 
     static String name(String code) {
-        String cn = DRIVERS.get(code);
+        // 用户 .rctrans 的 [drivers] 段优先，其次内置表（查不到就退回缩写）
+        String cn = userDrivers.get(code);
+        if (cn == null) {
+            cn = DRIVERS.get(code);
+        }
         return cn == null ? code : cn;
     }
 
