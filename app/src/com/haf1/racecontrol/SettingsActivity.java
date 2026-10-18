@@ -3,6 +3,7 @@ package com.haf1.racecontrol;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
 import android.util.TypedValue;
@@ -18,6 +19,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * 设置页。
@@ -312,6 +314,42 @@ public class SettingsActivity extends Activity {
         delayBox = number(root, "消息延时（秒）", String.valueOf(p.delaySec),
                 "0 - " + DelayGate.MAX_SECONDS + "，默认 0。");
 
+        // ---- 翻译库（.rctrans 纯文本，导入/导出）----
+        // 用户要的："两端的翻译库独立出来便于更改" + "做成 .rctrans 格式文件，
+        // 内部仍为纯文本"。所以这里给导入/导出/恢复默认三个按钮，
+        // 改译文不用等新版 APK。
+        header(root, "翻译库");
+        label(root, "改译文不用等新版 APK：导入一个 .rctrans 文件（纯文本，一行一条「英文短语 = 中文」）即可。",
+                "「导出」会给你一份包含当前全部词条的模板，改完再导回来；"
+                        + "「恢复默认」= 删掉导入的、回到内置译文。"
+                        + "当前生效的用户词条：" + Translator.userTableSize() + " 条。");
+        Button transImport = new Button(this);
+        transImport.setText("导入翻译（.rctrans）");
+        transImport.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                pickTransFile(true);
+            }
+        });
+        root.addView(transImport);
+        Button transExport = new Button(this);
+        transExport.setText("导出翻译（.rctrans）");
+        transExport.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                pickTransFile(false);
+            }
+        });
+        root.addView(transExport);
+        Button transReset = new Button(this);
+        transReset.setText("恢复默认翻译");
+        transReset.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                TransStore.reset(SettingsActivity.this);
+                Toast.makeText(SettingsActivity.this, "已恢复默认翻译",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        root.addView(transReset);
+
         Button save = new Button(this);
         save.setText("保存");
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
@@ -349,6 +387,39 @@ public class SettingsActivity extends Activity {
 
         scroll.addView(root);
         setContentView(scroll);
+    }
+
+    // ------------------------------------------------------------------
+    // 翻译库导入 / 导出（系统文件选择器）
+    // ------------------------------------------------------------------
+
+    /** 请求码：导入 / 导出 .rctrans。 */
+    private static final int REQ_TRANS_IN = 6101;
+    private static final int REQ_TRANS_OUT = 6102;
+
+    /**
+     * 打开系统文件选择器。
+     *
+     * 导入用 {@code * / *}：.rctrans 是自定义扩展名，系统 MIME 表里没有，
+     * 限定 text/plain 会让文件在选择器里是灰的、根本选不中（实测思路）。
+     */
+    private void pickTransFile(boolean importIt) {
+        Intent i;
+        if (importIt) {
+            i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.setType("*/*");
+        } else {
+            i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.setType("text/plain");
+            i.putExtra(Intent.EXTRA_TITLE, "translations" + RcTrans.EXT);
+        }
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(i, importIt ? REQ_TRANS_IN : REQ_TRANS_OUT);
+        } catch (Exception e) {
+            Toast.makeText(this, "这个系统没有可用的文件选择器：" + e.getMessage(),
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -544,9 +615,36 @@ public class SettingsActivity extends Activity {
         }
     }
 
+    /** 翻译库导入/导出回来之后：读文件挂上，或者把当前词表写出去。 */
+    private void onTransResult(int req, int res, Intent data) {
+        if (res != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        Uri uri = data.getData();
+        try {
+            if (req == REQ_TRANS_IN) {
+                int n = TransStore.importFrom(this, uri);
+                Toast.makeText(this, n > 0
+                                ? ("已导入 " + n + " 条译文（回到主界面即生效）")
+                                : "文件里没有有效词条（每行应是「英文短语 = 中文」）",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                TransStore.exportTo(this, uri);
+                Toast.makeText(this, "已导出当前翻译词表", Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "操作失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
     @Override
     protected void onActivityResult(int req, int result, Intent data) {
         super.onActivityResult(req, result, data);
+        // 翻译库的导入/导出（.rctrans）—— 和回放选文件共用一个回调，按请求码分流
+        if (req == REQ_TRANS_IN || req == REQ_TRANS_OUT) {
+            onTransResult(req, result, data);
+            return;
+        }
         if (req != REQ_PICK_RCLOG) {
             return;
         }

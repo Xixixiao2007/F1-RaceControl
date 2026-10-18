@@ -647,6 +647,8 @@ public class F1MainActivity extends Activity {
         super.onResume();
         prefs = Prefs.load(this);
         prefs.applyTo(gate);
+        // .rctrans 翻译库：在设置页导入后回到主界面立即生效（不用重启 App）
+        TransStore.load(this);
         // 延时能在运行中改：从设置页回来立刻生效，不用重连、不用重启 App。
         if (client instanceof F1Client) {
             ((F1Client) client).setDelaySeconds(prefs.delaySec);

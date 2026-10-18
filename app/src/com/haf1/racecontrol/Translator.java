@@ -99,8 +99,61 @@ public final class Translator {
     private static final Pattern LAP_REVIEW = Pattern.compile(
             "LAP TIME OF CAR (\\d+)\\s*\\(([A-Z]{3})\\)\\s*-\\s*UNDER REVIEW");
 
+    /**
+     * 当前**生效的完整词表**（内置 + 用户覆盖），导出 .rctrans 用。
+     *
+     * 和 {@link #exportTrans()} 的区别：那个只有内置的原始词条，
+     * 这个把用户改过的并进去 —— 用户点「导出」拿到的应该是他现在看到的那份。
+     */
+    public static String currentTrans() {
+        java.util.LinkedHashMap<String, String> pairs =
+                RcTrans.parse(exportTrans());
+        pairs.putAll(userTable);
+        return RcTrans.format(pairs);
+    }
+
     /** 三位缩写 -> 中文姓氏。用数据里实际出现过的车手，查不到就退回缩写。 */
     private static final Map<String, String> DRIVERS = new HashMap<String, String>();
+
+    /**
+     * 用户导入的翻译词表（英文短语 -> 中文，来自 .rctrans 文件）。
+     * 空表示只走内置规则。volatile：界面上导入后立即对读线程生效。
+     */
+    private static volatile Map<String, String> userTable =
+            java.util.Collections.emptyMap();
+
+    /** 设置/清除用户词表（null 或空 = 恢复内置规则）。 */
+    public static void setUserTable(Map<String, String> table) {
+        userTable = table == null
+                ? java.util.Collections.<String, String>emptyMap()
+                : java.util.Collections.unmodifiableMap(
+                        new java.util.LinkedHashMap<String, String>(table));
+    }
+
+    /** 当前用户词表的条数（设置页显示"已导入 N 条"用）。 */
+    public static int userTableSize() {
+        return userTable.size();
+    }
+
+    /**
+     * 导出内置的"短语 -> 中文"表，生成 .rctrans 文本给用户改。
+     *
+     * 只导出**纯词条**（处置原因、删除原因）—— 车手缩写表不导出：
+     * 那是"VER -> 维斯塔潘"这种三字母键，放进词表会命中任何包含该缩写的句子，
+     * 反而把译文弄坏。正则规则也留在代码里（那是逻辑，不是词条）。
+     */
+    public static String exportTrans() {
+        java.util.LinkedHashMap<String, String> pairs =
+                new java.util.LinkedHashMap<String, String>();
+        for (int i = 0; i < REASONS.length; i++) {
+            pairs.put(REASONS[i][0], REASONS[i][1]);
+        }
+        for (int i = 0; i < DELETE_REASONS.length; i++) {
+            pairs.put(DELETE_REASONS[i][0], DELETE_REASONS[i][1]);
+        }
+        return RcTrans.format(pairs);
+    }
+
 
     static {
         DRIVERS.put("VER", "维斯塔潘");
@@ -197,6 +250,7 @@ public final class Translator {
             return null;
         }
         String up = raw.toUpperCase(Locale.US);
+
 
         // 集成自带的自测消息：`... - RACE CONTROL TEST`。
         // 它没有车号，落到下面的兜底会变成「某车手」—— 明明没有车手。
@@ -395,7 +449,12 @@ public final class Translator {
             return null;
         }
         String why = "";
-        for (int i = 0; i < DELETE_REASONS.length; i++) {
+        // 用户词表优先（同 reason()：短语级覆盖）
+        String userWhy = RcTrans.match(userTable, up);
+        if (userWhy != null) {
+            why = userWhy;
+        }
+        for (int i = 0; why.length() == 0 && i < DELETE_REASONS.length; i++) {
             if (up.indexOf(DELETE_REASONS[i][0]) >= 0) {
                 why = DELETE_REASONS[i][1];
                 break;
@@ -1028,6 +1087,12 @@ public final class Translator {
 
     /** 处置原因，按最长匹配优先。 */
     static String reason(String up) {
+        // ★ 用户导入的 .rctrans 词表优先：改一条短语就盖过内置那条，
+        //   而车号/圈数这些由调用方拼，不会因为覆盖而丢掉。
+        String user = RcTrans.match(userTable, up);
+        if (user != null) {
+            return user;
+        }
         for (int i = 0; i < REASONS.length; i++) {
             if (up.indexOf(REASONS[i][0]) >= 0) {
                 return REASONS[i][1];

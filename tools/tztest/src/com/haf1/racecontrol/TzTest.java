@@ -874,6 +874,83 @@ public class TzTest {
         eq("clear 之后不留状态",
                 Boolean.valueOf(pfG.flashing("7", pfT + 5000)), Boolean.FALSE);
 
+        section("RcTrans：.rctrans 翻译库（纯文本 + 导入覆盖）");
+        // 用户要的："用类似配置导入导出的方法，做成 .rctrans 格式文件，内部仍为纯文本"。
+        // 钉住：解析容错、最长匹配、导出往返、合并语义、以及"改一条就盖过内置"。
+        String rtTxt = "!rctrans 1\n# 注释行\n\nCAUSING A COLLISION = 造成碰撞\n"
+                + "TRACK LIMITS = 超出赛道限制\n这一行没有等号\n= 没有键\n   \n";
+        java.util.LinkedHashMap<String, String> rtPairs = RcTrans.parse(rtTxt);
+        eq("解析：跳过注释/空行/坏行，得到 2 条",
+                Integer.valueOf(rtPairs.size()), Integer.valueOf(2));
+        eq("解析：值正确", rtPairs.get("CAUSING A COLLISION"), "造成碰撞");
+        eq("整条完全一致命中（大小写不敏感）",
+                RcTrans.match(rtPairs, "causing a collision"), "造成碰撞");
+        eq("包含匹配（消息里带车号也认）",
+                RcTrans.match(rtPairs, "CAR 44 (HAM) CAUSING A COLLISION"), "造成碰撞");
+        eq("没命中返回 null",
+                RcTrans.match(rtPairs, "SPEEDING IN THE PIT LANE"), null);
+
+        java.util.LinkedHashMap<String, String> rtLong =
+                new java.util.LinkedHashMap<String, String>();
+        rtLong.put("FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS", "未遵守赛会指令");
+        rtLong.put("FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS - MAXIMUM DELTA TIME",
+                "未遵守赛会指令（超出最大圈速差）");
+        eq("最长短语优先（短的不抢先吃掉长句）",
+                RcTrans.match(rtLong,
+                        "FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS - MAXIMUM DELTA TIME"),
+                "未遵守赛会指令（超出最大圈速差）");
+
+        String rtOut = RcTrans.format(rtLong);
+        eq("导出文本带文件头",
+                Boolean.valueOf(rtOut.startsWith(RcTrans.HEADER)), Boolean.TRUE);
+        eq("导出再解析往返一致（条数）",
+                Integer.valueOf(RcTrans.parse(rtOut).size()), Integer.valueOf(2));
+        eq("往返后内容还在",
+                RcTrans.parse(rtOut).get("FAILING TO FOLLOW RACE DIRECTORS INSTRUCTIONS"),
+                "未遵守赛会指令");
+
+        java.util.LinkedHashMap<String, String> rtDefault =
+                new java.util.LinkedHashMap<String, String>();
+        rtDefault.put("A", "甲");
+        rtDefault.put("B", "乙");
+        java.util.LinkedHashMap<String, String> rtUser =
+                new java.util.LinkedHashMap<String, String>();
+        rtUser.put("B", "乙（改）");
+        rtUser.put("C", "丙");
+        java.util.LinkedHashMap<String, String> rtMerged = RcTrans.merge(rtDefault, rtUser);
+        eq("合并：用户优先 + 内置补齐（3 条）",
+                Integer.valueOf(rtMerged.size()), Integer.valueOf(3));
+        eq("合并：用户覆盖内置", rtMerged.get("B"), "乙（改）");
+        eq("合并：内置没被丢掉", rtMerged.get("A"), "甲");
+
+        // ---- 挂到 Translator：改一条短语 = 换掉那一处措辞（车号仍由程序拼）----
+        String rtMsg =
+                "FIA STEWARDS: REPRIMAND (DRIVING) FOR CAR 23 (ALB) - CAUSING A COLLISION";
+        String rtBefore = Translator.gloss(rtMsg);
+        eq("内置能翻这句训诫（含车手名）",
+                Boolean.valueOf(rtBefore != null && rtBefore.indexOf("阿尔本") >= 0),
+                Boolean.TRUE);
+        java.util.LinkedHashMap<String, String> rtOverride =
+                new java.util.LinkedHashMap<String, String>();
+        rtOverride.put("CAUSING A COLLISION", "引发碰撞（自定义）");
+        Translator.setUserTable(rtOverride);
+        String rtAfter = Translator.gloss(rtMsg);
+        eq("★ 导入词表后这一条换成用户的译文",
+                Boolean.valueOf(rtAfter != null
+                        && rtAfter.indexOf("引发碰撞（自定义）") >= 0), Boolean.TRUE);
+        eq("并且车手名/车号没被覆盖掉（车号仍由程序拼）",
+                Boolean.valueOf(rtAfter != null && rtAfter.indexOf("阿尔本(23)") >= 0),
+                Boolean.TRUE);
+        eq("设置页能报出导入了几条",
+                Integer.valueOf(Translator.userTableSize()), Integer.valueOf(1));
+        Translator.setUserTable(null);
+        eq("清掉之后回到内置译文", Translator.gloss(rtMsg), rtBefore);
+        eq("清掉之后条数归零",
+                Integer.valueOf(Translator.userTableSize()), Integer.valueOf(0));
+        eq("内置导出里含处置原因词条",
+                Boolean.valueOf(Translator.exportTrans()
+                        .contains("CAUSING A COLLISION = 造成碰撞")), Boolean.TRUE);
+
         section("Prefs.accept：过滤开关与车号筛选");
         Prefs p = new Prefs();
         p.noiseFilterEnabled = true;
