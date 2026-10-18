@@ -189,9 +189,12 @@ public class F1MainActivity extends Activity {
                 == Configuration.ORIENTATION_LANDSCAPE;
 
         LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.HORIZONTAL);
+        // ★ 竖屏也分两栏，只是改成**上下**分：上 = 消息列表，下 = 面板 + 图标条。
+        //   用户原话："安卓版竖屏状态下也分两栏，上下分栏"。
+        //   以前竖屏只放消息列表（`panel` 为 null），等于另一半屏幕空着。
+        body.setOrientation(land ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
 
-        // ---- 左：消息列表 ----
+        // ---- 上 / 左：状态行 + 消息列表 ----
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         left.addView(buildStatusRow());
@@ -204,16 +207,16 @@ public class F1MainActivity extends Activity {
         listView.setAdapter(adapter);
         left.addView(listView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        body.addView(left, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        body.addView(left, land
+                ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                : new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        if (land) {
-            // ---- 右：面板 + 窄框图标条 ----
-            panel = new RightPanelView(this);
-            body.addView(panel, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-            body.addView(buildIconStrip());
-        }
+        // ---- 下 / 右：面板 + 图标条（横竖屏都要）----
+        panel = new RightPanelView(this);
+        body.addView(panel, land
+                ? new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                : new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        body.addView(buildIconStrip(land));
         return body;
     }
 
@@ -265,10 +268,14 @@ public class F1MainActivity extends Activity {
         return row;
     }
 
-    /** 右侧那条窄框图标：一屏一个，点谁切谁。 */
-    private View buildIconStrip() {
+    /**
+     * 面板切换条：横屏贴在右边缘（竖排），竖屏贴在底部（横排）。
+     *
+     * ★ 竖屏上下分栏之后这里必须横过来：竖排在底部会把面板挤成一条细缝。
+     */
+    private View buildIconStrip(boolean vertical) {
         iconStrip = new LinearLayout(this);
-        iconStrip.setOrientation(LinearLayout.VERTICAL);
+        iconStrip.setOrientation(vertical ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         iconStrip.setBackgroundColor(0xFF263238);
         for (int i = 0; i < RightPanelView.MODE_COUNT; i++) {
             final int mode = i;
@@ -286,8 +293,11 @@ public class F1MainActivity extends Activity {
                 }
             });
             icons.add(t);
-            iconStrip.addView(t, new LinearLayout.LayoutParams(dp(38),
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
+            iconStrip.addView(t, vertical
+                    ? new LinearLayout.LayoutParams(dp(38),
+                            ViewGroup.LayoutParams.WRAP_CONTENT)
+                    : new LinearLayout.LayoutParams(0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         }
         highlightIcons(RightPanelView.MODE_TRACK);
         return iconStrip;
