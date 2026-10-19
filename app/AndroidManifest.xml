@@ -16,10 +16,18 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.haf1.racecontrol"
-    android:versionCode="29"
-    android:versionName="3.2.7">
+    android:versionCode="30"
+    android:versionName="3.2.8">
 
-    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="23" />
+    <!--
+      targetSdk 取 25（Android 7.1）：原来是 23。
+      2026-10 用户反馈「三星 Android 16 装不上、提示未安装应用」，同版本小米能装 ——
+      Android 16 的框架层要求 targetSdk >= 24（三星严格执行，小米放宽）。
+      取 25 是过门槛并给安卓 17 可能再抬一格留余量；不抬到 26+ 是因为那会强制
+      通知渠道（26+）、PendingIntent 不可变（31+）、运行时通知权限（33+），
+      会影响强提醒通知的现有行为。minSdk 仍是 23（安卓 6.0 那台设备还得能装）。
+    -->
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="25" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 不同旗语给不同震动节奏。没有这个权限 vibrate() 会静默失败。 -->
     <uses-permission android:name="android.permission.VIBRATE" />

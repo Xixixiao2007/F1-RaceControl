@@ -59,7 +59,14 @@ for _s in (sys.stdout, sys.stderr):
 BUILD_TOOLS_VERSION = "30.0.3"
 PLATFORM = "android-23"          # 对应 Android 6.0
 MIN_SDK = "23"
-TARGET_SDK = "23"
+# ★ targetSdk 必须 >= 24：Android 16 的框架层就是这么要求的。
+#   2026-10 用户反馈「三星 Android 16 装不上、提示未安装应用」，同版本小米能装 ——
+#   三星的安装器严格执行 targetSdk 下限，小米放宽了。原来这里是 23。
+#   用户要求取 25（Android 7.1）：只过门槛 + 给安卓 17 抬到 25 留余量；
+#   26+ 会强制通知渠道、31+ 强制 PendingIntent 不可变、33+ 强制运行时通知权限
+#   —— 那些都会影响强提醒通知，本次不做。
+#   下面有防回退断言：改回 23 会在构建时直接失败，而不是等用户报装不上。
+TARGET_SDK = "25"
 
 KS_PASS = "android"
 KS_ALIAS = "androiddebugkey"
@@ -343,6 +350,12 @@ def main():
     # 产物里的版本号到底是哪个全看 aapt2 的实现细节 —— 不该留这种不确定性。
     vcode, vname = read_manifest_version(manifest)
     log("清单版本: versionCode=%s versionName=%s" % (vcode or "?", vname or "?"))
+    # 防回退：Android 16（含三星）装不上 targetSdk < 24 的包。这条断言让"改回去"
+    # 在构建时就炸，而不是等到用户手机上提示"未安装应用"。
+    if int(TARGET_SDK) < 24:
+        raise SystemExit("★ targetSdkVersion=%s < 24：Android 16 会拒绝安装"
+                         "（三星实测提示「未安装应用」）。见本文件 TARGET_SDK 注释。"
+                         % TARGET_SDK)
 
     res_dir = os.path.join(proj, "res")
     if os.path.isdir(res_dir) and collect(res_dir):
